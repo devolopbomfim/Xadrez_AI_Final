@@ -1,0 +1,18 @@
+# Ambiente virtual
+.venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Arquivos temporários
+*.log
+*.tmp
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
