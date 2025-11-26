@@ -18,3 +18,4 @@ __pycache__/
 .DS_Store
 
 tools/generate_magics
+pessoal/
