@@ -178,6 +178,27 @@ def bitboard_to_str(bb: int) -> str:
     return "\n".join(output)
 
 
+def square_index(coord: str) -> int:
+    """
+    Exemplo: "d4" -> índice inteiro do bitboard
+    """
+    file = ord(coord[0].lower()) - ord("a")
+    rank = int(coord[1]) - 1
+    return (rank << 3) | file
+
+
+CASTLE_WHITE_K = 1 << 0
+CASTLE_WHITE_Q = 1 << 1
+CASTLE_BLACK_K = 1 << 2
+CASTLE_BLACK_Q = 1 << 3
+
+CASTLING_ALL = (
+    CASTLE_WHITE_K |
+    CASTLE_WHITE_Q |
+    CASTLE_BLACK_K |
+    CASTLE_BLACK_Q
+)
+
 # =========================================================
 # Public API
 # =========================================================
@@ -217,4 +238,9 @@ __all__ = [
     "FILE_H",
     "RANK_1",
     "RANK_8",
+    "square_index",
+    "CASTLE_WHITE_K",
+    "CASTLE_WHITE_Q",
+    "CASTLE_BLACK_K",
+    "CASTLE_BLACK_Q",
 ]

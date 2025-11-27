@@ -19,3 +19,4 @@ __pycache__/
 
 tools/generate_magics
 pessoal/
+logs/

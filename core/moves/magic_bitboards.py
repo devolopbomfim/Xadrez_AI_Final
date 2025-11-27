@@ -359,7 +359,7 @@ def _validate_magics() -> None:
     if any(m == 0 for m in BISHOP_MAGICS):
         raise RuntimeError("BISHOP_MAGICS contains zero entries (magics_autogen missing or invalid).")
 
-
+'''
 def _validate_input_magics(magics: Tuple) -> Tuple[List[int], List[int]]:
     """
     Valida e extrai magics com type checking robusto.
@@ -391,28 +391,20 @@ def _validate_input_magics(magics: Tuple) -> Tuple[List[int], List[int]]:
 
     return rmag, bmag
 
-
+'''
 # ================================
 # INIT principal
 # ================================
 
 
 def init(
-    magics: Optional[Tuple[List[int], List[int]]] = None,
     generate_if_missing: bool = False,
     validate: bool = True,
 ) -> None:
     """
     Inicializa máscaras, offsets e tabelas de ataque para rook/bishop.
-    - magics: override explícito (tupla (rook_list, bishop_list)).
-    - generate_if_missing: reservado (não implementado geração automática aqui).
-    - validate: se True, valida magics e falha rápido.
-
-    Thread-safe: usa lock para garantir inicialização única.
-
-    Complexidade:
-      - Tempo: dominado pela construção das tabelas (única vez).
-      - Espaço: somatório de 2^relevant_bits por square.
+    Usa exclusivamente magics de magics_autogen.py.
+    Thread-safe e idempotente.
     """
     global _ROOK_ATT_TABLE, _BISHOP_ATT_TABLE, _INITIALIZED
 
@@ -420,44 +412,46 @@ def init(
         if _INITIALIZED:
             return
 
-        # Se magics fornecidos externamente, sobrescreve com validação
-        if magics is not None:
-            rmag, bmag = _validate_input_magics(magics)
-            for i in range(64):
-                ROOK_MAGICS[i] = _u64(rmag[i])
-                BISHOP_MAGICS[i] = _u64(bmag[i])
-
-        # Falha rápida se necessário
+        # Falha rápida (magics válidos, tamanho 64, etc.)
         if validate:
             _validate_magics()
 
-        # Inicializa máscaras e metadados (pré-computação)
+        # ------------------------------------------------------------------
+        # 1. Máscaras, relevant bits, shifts e MASK_POSITIONS unificado
+        # ------------------------------------------------------------------
+
+        _MASK_POSITIONS.clear()
+
         for sq in range(64):
-            rook_mask = mask_rook_attacks(sq)
-            bishop_mask = mask_bishop_attacks(sq)
+            # Máscaras relevantes INTERNAS do magic_bitboards
+            # (não importa nada do attack_tables)
+            rmask = mask_rook_attacks(sq)
+            bmask = mask_bishop_attacks(sq)
 
-            ROOK_MASKS[sq] = rook_mask
-            BISHOP_MASKS[sq] = bishop_mask
+            ROOK_MASKS[sq] = rmask
+            BISHOP_MASKS[sq] = bmask
 
-            rb = rook_mask.bit_count()
-            bb = bishop_mask.bit_count()
+            # Relevant bits
+            rb = rmask.bit_count()
+            bb = bmask.bit_count()
 
             ROOK_RELEVANT_BITS[sq] = rb
             BISHOP_RELEVANT_BITS[sq] = bb
 
+            # Shifts
             ROOK_SHIFTS[sq] = 64 - rb
             BISHOP_SHIFTS[sq] = 64 - bb
 
-            rook_pos = tuple(mask_bits_positions(rook_mask))
-            bishop_pos = tuple(mask_bits_positions(bishop_mask))
+            # Posições dos bits do mask
+            _MASK_POSITIONS[(sq, True)]  = tuple(mask_bits_positions(rmask))
+            _MASK_POSITIONS[(sq, False)] = tuple(mask_bits_positions(bmask))
 
-            _ROOK_MASK_POSITIONS[sq] = rook_pos
-            _BISHOP_MASK_POSITIONS[sq] = bishop_pos
+        assert len(_MASK_POSITIONS) == 128, "MASK_POSITIONS corrompido: esperado 128 entradas"
 
-            _MASK_POSITIONS[(sq, True)] = rook_pos
-            _MASK_POSITIONS[(sq, False)] = bishop_pos
+        # ------------------------------------------------------------------
+        # 2. Offsets lineares (layout contíguo)
+        # ------------------------------------------------------------------
 
-        # Offsets lineares (contíguos)
         rook_offset = 0
         for sq in range(64):
             _ROOK_OFFSETS[sq] = rook_offset
@@ -468,15 +462,22 @@ def init(
             _BISHOP_OFFSETS[sq] = bishop_offset
             bishop_offset += 1 << BISHOP_RELEVANT_BITS[sq]
 
-        # Alocações densas para tabelas (boa locality)
+        # ------------------------------------------------------------------
+        # 3. Alocação das tabelas
+        # ------------------------------------------------------------------
+
         _ROOK_ATT_TABLE = [0] * rook_offset
         _BISHOP_ATT_TABLE = [0] * bishop_offset
 
-        # Construção das tabelas (hot but one-time)
-        for sq in range(64):
-            r_positions = _ROOK_MASK_POSITIONS[sq] or ()
-            b_positions = _BISHOP_MASK_POSITIONS[sq] or ()
+        # ------------------------------------------------------------------
+        # 4. Construção das tabelas de ataque
+        # ------------------------------------------------------------------
 
+        for sq in range(64):
+            r_positions = _MASK_POSITIONS[(sq, True)]
+            b_positions = _MASK_POSITIONS[(sq, False)]
+
+            # Rook
             r_table = _build_attack_table_for_square(
                 sq,
                 ROOK_MASKS[sq],
@@ -488,6 +489,7 @@ def init(
             roff = _ROOK_OFFSETS[sq]
             _ROOK_ATT_TABLE[roff : roff + len(r_table)] = r_table
 
+            # Bishop
             b_table = _build_attack_table_for_square(
                 sq,
                 BISHOP_MASKS[sq],
@@ -543,7 +545,7 @@ def bishop_attacks(sq: int, occ: int) -> int:
     magic = BISHOP_MAGICS[sq]
     shift = BISHOP_SHIFTS[sq]
     off = _BISHOP_OFFSETS[sq]
-    # OTIM: Remover _u64() — occ & mask já é válido
+
     compressed = (((occ & mask) * magic) & U64_MASK) >> shift
     return _BISHOP_ATT_TABLE[off + compressed]
 

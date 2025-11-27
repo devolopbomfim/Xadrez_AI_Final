@@ -4,10 +4,28 @@
 # invariantes preservadas (A1=0, enums, serialização externa, APIs públicas).
 # Hot paths: set_piece_at, remove_piece_at, move_piece, validate, copy.
 from __future__ import annotations
+
 from typing import Optional, Tuple, List
 
+from core.moves.attack_tables import knight_attacks, king_attacks
+from core.moves.magic_bitboards import bishop_attacks, rook_attacks
+from core.moves.move import Move
+from utils.constants import (
+    CASTLE_WHITE_K,
+    CASTLE_WHITE_Q,
+    CASTLE_BLACK_K,
+    CASTLE_BLACK_Q,
+)
+from utils.constants import (
+    PIECE_COUNT,
+    COLOR_COUNT,
+    NOT_FILE_H,
+    NOT_FILE_A,
+    square_index,
+)
 from utils.enums import Color, PieceType
-from utils.constants import PIECE_COUNT, COLOR_COUNT
+
+__all__ = ["Board", "make_board"]
 
 # ------------------------------------------------------------
 # Precomputed bit masks
@@ -15,12 +33,14 @@ from utils.constants import PIECE_COUNT, COLOR_COUNT
 # PERF: Precompute single-square bit masks to avoid repeated shifts in hot paths.
 SQUARE_BB: tuple[int, ...] = tuple(1 << sq for sq in range(64))
 
+
 def _sq_bit(square: int) -> int:
     """Return the bitboard mask for `square`. Uses precomputed table for speed."""
     return SQUARE_BB[square]
 
 # mailbox cell: None | (Color, PieceType)
 MailboxCell = Optional[Tuple[Color, PieceType]]
+
 
 # ------------------------------------------------------------
 # Board
@@ -51,6 +71,13 @@ class Board:
         "occupancy",
         "all_occupancy",
         "mailbox",
+        "side_to_move",
+        "_state_stack",
+        "zobrist_key",
+        "castling_rights",
+        "en_passant_square",
+        "halfmove_clock",
+        "fullmove_number",
     )
 
     def __init__(self, setup: bool = True) -> None:
@@ -64,8 +91,16 @@ class Board:
         # mailbox[64] -> None | (Color, PieceType)
         self.mailbox: List[MailboxCell] = [None] * 64
 
+        self._state_stack = []  # moved BEFORE validate()
+        self.side_to_move = Color.WHITE
+        self.castling_rights = 0
+        self.en_passant_square = None
+        self.halfmove_clock = 0
+        self.fullmove_number = 1
+
         if setup:
             self._set_starting_position()
+
         self.validate()
 
     # ------------------------------------------------------------
@@ -85,23 +120,29 @@ class Board:
         self.all_occupancy = 0
         # PERF: recreate mailbox list (fast) instead of mutating each entry.
         self.mailbox = [None] * 64
+        self.side_to_move: Color = Color.WHITE
+        self.castling_rights = 0
+        self.en_passant_square = None
+        self.halfmove_clock = 0
+        self.fullmove_number = 1
 
-    def copy(self) -> "Board":
-        """Return a shallow copy of the board (bitboards/mailbox copied).
+    def copy(self):
+        new = Board.__new__(Board)
 
-        Complexity: O(PIECE_COUNT * COLOR_COUNT + 64) -> effectively constant.
-        """
-        b = Board(setup=False)
-        # PERF: local var lookups reduce attribute access overhead
-        src_bb = self.bitboards
-        dst_bb = b.bitboards
-        for c in range(COLOR_COUNT):
-            dst_bb[c][:] = src_bb[c][:]  # copy inner list contents in-place
-            b.occupancy[c] = self.occupancy[c]
-        b.all_occupancy = self.all_occupancy
-        # mailbox is a small fixed-size list; .copy() is efficient
-        b.mailbox = self.mailbox.copy()
-        return b
+        new.bitboards = [row.copy() for row in self.bitboards]
+        new.occupancy = self.occupancy.copy()
+        new.all_occupancy = self.all_occupancy
+        new.mailbox = self.mailbox.copy()
+
+        new.side_to_move = self.side_to_move
+        new.castling_rights = self.castling_rights
+        new.en_passant_square = self.en_passant_square
+        new.halfmove_clock = self.halfmove_clock
+        new.fullmove_number = self.fullmove_number
+
+        new._state_stack = []
+
+        return new
 
     def get_piece_at(self, square: int) -> MailboxCell:
         """Return mailbox cell at `square`."""
@@ -171,11 +212,14 @@ class Board:
             # PERF: reuse remove_piece_at (very fast) to keep correctness centralized
             self.remove_piece_at(to_sq)
 
-        # move bitboards — XOR both bits (remove source, set destination).
-        # PERF: XOR is slightly faster than separate clear/set in-place.
-        self.bitboards[ci][pi] ^= (src_bit | dst_bit)
+        # move bitboards — explicit clear/set to avoid XOR ambiguidade.
+        self.bitboards[ci][pi] &= ~src_bit
+        self.bitboards[ci][pi] |= dst_bit
+
         # move occupancy
-        self.occupancy[ci] ^= (src_bit | dst_bit)
+        self.occupancy[ci] &= ~src_bit
+        self.occupancy[ci] |= dst_bit
+
         # move mailbox
         self.mailbox[from_sq] = None
         self.mailbox[to_sq] = (color, piece)
@@ -316,4 +360,532 @@ class Board:
         place(B, PieceType.PAWN,   list(range(48, 56)))
 
         self.all_occupancy = self.occupancy[0] | self.occupancy[1]
+        self.side_to_move = Color.WHITE
         self.validate()
+
+    def set_startpos(self) -> None:
+        self._set_starting_position()
+        self.side_to_move = Color.WHITE
+
+    def place(self, piece: PieceType, color: Color, square: str) -> None:
+        sqi = square_index(square)
+        self.set_piece_at(sqi, color, piece)
+
+    @property
+    def pieces(self):
+        """
+        Adapter para compatibilidade com movegen legado.
+        NÃO é fonte da verdade. Apenas reflete self.bitboards.
+        """
+        return {
+            Color.WHITE: {
+                PieceType.PAWN: self.bitboards[int(Color.WHITE)][int(PieceType.PAWN)],
+                PieceType.KNIGHT: self.bitboards[int(Color.WHITE)][int(PieceType.KNIGHT)],
+                PieceType.BISHOP: self.bitboards[int(Color.WHITE)][int(PieceType.BISHOP)],
+                PieceType.ROOK: self.bitboards[int(Color.WHITE)][int(PieceType.ROOK)],
+                PieceType.QUEEN: self.bitboards[int(Color.WHITE)][int(PieceType.QUEEN)],
+                PieceType.KING: self.bitboards[int(Color.WHITE)][int(PieceType.KING)],
+            },
+            Color.BLACK: {
+                PieceType.PAWN: self.bitboards[int(Color.BLACK)][int(PieceType.PAWN)],
+                PieceType.KNIGHT: self.bitboards[int(Color.BLACK)][int(PieceType.KNIGHT)],
+                PieceType.BISHOP: self.bitboards[int(Color.BLACK)][int(PieceType.BISHOP)],
+                PieceType.ROOK: self.bitboards[int(Color.BLACK)][int(PieceType.ROOK)],
+                PieceType.QUEEN: self.bitboards[int(Color.BLACK)][int(PieceType.QUEEN)],
+                PieceType.KING: self.bitboards[int(Color.BLACK)][int(PieceType.KING)],
+            },
+        }
+
+    # ------------------------------------------------------------
+    # Attack / check helpers
+    # ------------------------------------------------------------
+    def _pawn_attacked(self, sq: int, by_color: Color) -> bool:
+        """Return True if square `sq` is attacked by a pawn of `by_color`.
+
+        This is computed by generating the pawn attack mask landing on `sq` and
+        intersecting with actual pawn bitboard of `by_color`.
+        """
+        bb = SQUARE_BB[sq]
+        if by_color == Color.WHITE:
+            # white pawns attack up: from (sq-7) and (sq-9)
+            attackers = ((bb >> 7) & NOT_FILE_A) | ((bb >> 9) & NOT_FILE_H)
+        else:
+            # black pawns attack down: from (sq+7) and (sq+9)
+            attackers = ((bb << 7) & NOT_FILE_H) | ((bb << 9) & NOT_FILE_A)
+        return bool(self.bitboards[int(by_color)][int(PieceType.PAWN)] & attackers)
+
+    def _is_square_attacked(self, sq: int, by_color: Color) -> bool:
+        occ = self.all_occupancy
+        target = SQUARE_BB[sq]
+
+        ci = int(by_color)
+
+        # 1. Pawn attacks
+        if self._pawn_attacked(sq, by_color):
+            return True
+
+        # 2. Knight attacks
+        knights = self.bitboards[ci][int(PieceType.KNIGHT)]
+        knight_mask = knight_attacks(sq)
+        if knights & knight_mask:
+            return True
+
+        # 3. Bishop + Queen diagonals
+        diag_attackers = self.bitboards[ci][int(PieceType.BISHOP)] | self.bitboards[ci][int(PieceType.QUEEN)]
+        if diag_attackers:
+            if bishop_attacks(sq, occ) & diag_attackers:
+                return True
+
+        # 4. Rook + Queen files/ranks
+        straight_attackers = self.bitboards[ci][int(PieceType.ROOK)] | self.bitboards[ci][int(PieceType.QUEEN)]
+        if straight_attackers:
+            if rook_attacks(sq, occ) & straight_attackers:
+                return True
+
+        # 5. King adjacency
+        king = self.bitboards[ci][int(PieceType.KING)]
+        if king and king_attacks(sq) & king:
+            return True
+
+        return False
+
+    def is_in_check(self, color: Color) -> bool:
+        enemy = Color.BLACK if color == Color.WHITE else Color.WHITE
+
+        king_bb = self.bitboards[int(color)][int(PieceType.KING)]
+        if king_bb == 0:
+            return False
+
+        king_sq = (king_bb & -king_bb).bit_length() - 1
+        return self._is_square_attacked(king_sq, enemy)
+
+    from utils.constants import (
+        CASTLE_WHITE_K,
+        CASTLE_WHITE_Q,
+        CASTLE_BLACK_K,
+        CASTLE_BLACK_Q,
+    )
+
+    def make_move(self, move):
+        """
+        Aplica um movimento completo:
+        - atualização consistente de bitboards, mailbox, occupancies
+        - roque, promoção, en-passant corretos
+        - castling rights corrigidos
+        """
+
+        self._push_state()
+
+        stm = self.side_to_move
+        enemy = Color.BLACK if stm == Color.WHITE else Color.WHITE
+
+        from_sq = move.from_sq
+        to_sq = move.to_sq
+        piece = move.piece
+
+        old_ep = self.en_passant_square
+        self.en_passant_square = None
+
+        # ====================================================
+        # CAPTURA (normal ou en-passant)
+        # ====================================================
+
+        if piece == PieceType.PAWN and move.is_capture and old_ep is not None and to_sq == old_ep:
+            cap_sq = to_sq - 8 if stm == Color.WHITE else to_sq + 8
+            self._clear_square(cap_sq)
+
+        elif move.is_capture:
+            self._clear_square(to_sq)
+
+        # ====================================================
+        # MOVIMENTO PRINCIPAL
+        # ====================================================
+
+        self._clear_square(from_sq)
+        self._place_piece(stm, piece, to_sq)
+
+        # ====================================================
+        # ROQUE
+        # ====================================================
+
+        if piece == PieceType.KING and abs(to_sq - from_sq) == 2:
+
+            if stm == Color.WHITE:
+                # O-O
+                if to_sq == 6:
+                    self._clear_square(7)
+                    self._place_piece(stm, PieceType.ROOK, 5)
+                # O-O-O
+                elif to_sq == 2:
+                    self._clear_square(0)
+                    self._place_piece(stm, PieceType.ROOK, 3)
+
+            else:
+                # O-O
+                if to_sq == 62:
+                    self._clear_square(63)
+                    self._place_piece(stm, PieceType.ROOK, 61)
+                # O-O-O
+                elif to_sq == 58:
+                    self._clear_square(56)
+                    self._place_piece(stm, PieceType.ROOK, 59)
+
+        # ====================================================
+        # PROMOÇÃO
+        # ====================================================
+
+        if piece == PieceType.PAWN and move.promotion is not None:
+            self._clear_square(to_sq)
+            self._place_piece(stm, move.promotion, to_sq)
+
+        # ====================================================
+        # CASTLING RIGHTS
+        # ====================================================
+
+        if piece == PieceType.KING:
+            if stm == Color.WHITE:
+                self.castling_rights &= ~(CASTLE_WHITE_K | CASTLE_WHITE_Q)
+            else:
+                self.castling_rights &= ~(CASTLE_BLACK_K | CASTLE_BLACK_Q)
+
+        if piece == PieceType.ROOK:
+            if stm == Color.WHITE:
+                if from_sq == 0:
+                    self.castling_rights &= ~CASTLE_WHITE_Q
+                elif from_sq == 7:
+                    self.castling_rights &= ~CASTLE_WHITE_K
+            else:
+                if from_sq == 56:
+                    self.castling_rights &= ~CASTLE_BLACK_Q
+                elif from_sq == 63:
+                    self.castling_rights &= ~CASTLE_BLACK_K
+
+        if move.is_capture:
+            if to_sq == 0:
+                self.castling_rights &= ~CASTLE_WHITE_Q
+            elif to_sq == 7:
+                self.castling_rights &= ~CASTLE_WHITE_K
+            elif to_sq == 56:
+                self.castling_rights &= ~CASTLE_BLACK_Q
+            elif to_sq == 63:
+                self.castling_rights &= ~CASTLE_BLACK_K
+
+        # ====================================================
+        # EN PASSANT (novo)
+        # ====================================================
+
+        if piece == PieceType.PAWN and abs(to_sq - from_sq) == 16:
+            self.en_passant_square = (from_sq + to_sq) // 2
+
+        # ====================================================
+        # ATUALIZAR OCCUPANCY
+        # ====================================================
+
+        self.occupancy[0] = (
+                self.bitboards[0][0] | self.bitboards[0][1] | self.bitboards[0][2]
+                | self.bitboards[0][3] | self.bitboards[0][4] | self.bitboards[0][5]
+        )
+
+        self.occupancy[1] = (
+                self.bitboards[1][0] | self.bitboards[1][1] | self.bitboards[1][2]
+                | self.bitboards[1][3] | self.bitboards[1][4] | self.bitboards[1][5]
+        )
+
+        self.all_occupancy = self.occupancy[0] | self.occupancy[1]
+
+        # ====================================================
+        # TROCA DE LADO
+        # ====================================================
+
+        self.side_to_move = enemy
+
+    def unmake_move(self):
+        self._pop_state()
+
+    def _push_state(self) -> None:
+        """
+        Save full snapshot of mutable board state required to unmake moves.
+        Snapshot order is deliberate and must match _pop_state exactly.
+        """
+        # copy bitboards: two lists (one per color) of piece bitboards
+        bitboards_copy = [list(self.bitboards[0]), list(self.bitboards[1])]
+
+        # mailbox is list of tuples or None; list() makes a shallow copy (tuples immutable)
+        mailbox_copy = list(self.mailbox)
+
+        # occupancy per color (ints)
+        occupancy_copy = [int(self.occupancy[0]), int(self.occupancy[1])]
+
+        # global occupancy
+        all_occ_copy = int(self.all_occupancy)
+
+        # primitives
+        castling_copy = int(self.castling_rights)
+        enpass_copy = None if self.en_passant_square is None else int(self.en_passant_square)
+        halfmove_copy = int(self.halfmove_clock)
+        fullmove_copy = int(self.fullmove_number)
+        side_copy = self.side_to_move
+
+        # ensure stack exists
+        if not hasattr(self, "_state_stack"):
+            self._state_stack = []
+
+        # push tuple in this exact order (must match _pop_state)
+        self._state_stack.append((
+            bitboards_copy,
+            mailbox_copy,
+            occupancy_copy,
+            all_occ_copy,
+            castling_copy,
+            enpass_copy,
+            halfmove_copy,
+            fullmove_copy,
+            side_copy,
+        ))
+
+    def _pop_state(self) -> None:
+        """
+        Restore snapshot saved by _push_state. Must match the push order exactly.
+        """
+        if not hasattr(self, "_state_stack") or not self._state_stack:
+            raise RuntimeError("No state to pop")
+
+        (
+            bitboards_copy,
+            mailbox_copy,
+            occupancy_copy,
+            all_occ_copy,
+            castling_copy,
+            enpass_copy,
+            halfmove_copy,
+            fullmove_copy,
+            side_copy,
+        ) = self._state_stack.pop()
+
+        # restore bitboards (ensure lists-of-lists shape)
+        self.bitboards = [list(bitboards_copy[0]), list(bitboards_copy[1])]
+
+        # mailbox
+        self.mailbox = list(mailbox_copy)
+
+        # occupancy / all_occupancy
+        self.occupancy = [int(occupancy_copy[0]), int(occupancy_copy[1])]
+        self.all_occupancy = int(all_occ_copy)
+
+        # other primitives
+        self.castling_rights = int(castling_copy)
+        self.en_passant_square = None if enpass_copy is None else int(enpass_copy)
+        self.halfmove_clock = int(halfmove_copy)
+        self.fullmove_number = int(fullmove_copy)
+        self.side_to_move = side_copy
+
+        # final sanity check: union of piece bitboards must equal all_occupancy
+        bb_union = 0
+        for c in (0, 1):
+            for p in range(len(self.bitboards[c])):
+                bb_union |= int(self.bitboards[c][p])
+        assert self.all_occupancy == bb_union, "all_occupancy mismatch after pop_state"
+
+    def _pawn_attacks_from(self, pawns_bb: int, color: Color) -> int:
+        if pawns_bb == 0:
+            return 0
+
+        if color == Color.WHITE:
+            left = (pawns_bb << 7) & NOT_FILE_H
+            right = (pawns_bb << 9) & NOT_FILE_A
+        else:
+            left = (pawns_bb >> 9) & NOT_FILE_H
+            right = (pawns_bb >> 7) & NOT_FILE_A
+
+        return left | right
+
+    @classmethod
+    def from_fen(cls, fen: str) -> "Board":
+        board = cls(setup=False)
+        board.set_fen(fen)
+        return board
+
+    def set_fen(self, fen: str) -> None:
+        """
+        Load a position from a FEN string.
+        Minimal implementation for perft validation.
+        """
+        self.clear()
+
+        parts = fen.strip().split()
+        if len(parts) < 4:
+            raise ValueError("Invalid FEN: must have at least 4 fields")
+
+        placement, side, castling, en_passant = parts[0], parts[1], parts[2], parts[3]
+
+        rank = 7
+        file = 0
+
+        for ch in placement:
+            if ch == "/":
+                rank -= 1
+                file = 0
+                continue
+
+            if ch.isdigit():
+                file += int(ch)
+                continue
+
+            color = Color.WHITE if ch.isupper() else Color.BLACK
+            piece = {
+                "p": PieceType.PAWN,
+                "n": PieceType.KNIGHT,
+                "b": PieceType.BISHOP,
+                "r": PieceType.ROOK,
+                "q": PieceType.QUEEN,
+                "k": PieceType.KING,
+            }[ch.lower()]
+
+            square = rank * 8 + file
+            self.set_piece_at(square, color, piece)
+            file += 1
+
+        # Side to move
+        self.side_to_move = Color.WHITE if side == "w" else Color.BLACK
+
+        # Castling rights (use canonical CASTLE_* constants)
+        self.castling_rights = 0
+        if castling != "-":
+            if "K" in castling:
+                self.castling_rights |= CASTLE_WHITE_K
+            if "Q" in castling:
+                self.castling_rights |= CASTLE_WHITE_Q
+            if "k" in castling:
+                self.castling_rights |= CASTLE_BLACK_K
+            if "q" in castling:
+                self.castling_rights |= CASTLE_BLACK_Q
+
+        # En passant
+        if en_passant == "-":
+            self.en_passant_square = None
+        else:
+            file_char, rank_char = en_passant
+            file = ord(file_char) - ord("a")
+            rank = int(rank_char) - 1
+            self.en_passant_square = rank * 8 + file
+
+        # Recalculate occupancy
+        self.occupancy[0] = 0
+        self.occupancy[1] = 0
+
+        for color in (Color.WHITE, Color.BLACK):
+            for bb in self.bitboards[int(color)]:
+                self.occupancy[int(color)] |= bb
+
+        self.all_occupancy = self.occupancy[0] | self.occupancy[1]
+
+        self.validate()
+
+        if len(parts) >= 5:
+            self.halfmove_clock = int(parts[4])
+        else:
+            self.halfmove_clock = 0
+
+        if len(parts) >= 6:
+            self.fullmove_number = int(parts[5])
+        else:
+            self.fullmove_number = 1
+
+    def _clear_square(self, sq):
+        """Remove qualquer peça do square, atualizando bitboards e mailbox."""
+        piece = self.mailbox[sq]
+        if piece is None:
+            return
+
+        color, ptype = piece
+
+        self.mailbox[sq] = None
+        self.bitboards[int(color)][int(ptype)] ^= (1 << sq)
+
+        self.occupancy[int(color)] ^= (1 << sq)
+        self.all_occupancy ^= (1 << sq)
+
+    def _place_piece(self, color, ptype, sq):
+        """Coloca uma peça no square, atualizando bitboards e mailbox."""
+        self.mailbox[sq] = (color, ptype)
+
+        self.bitboards[int(color)][int(ptype)] |= (1 << sq)
+        self.occupancy[int(color)] |= (1 << sq)
+        self.all_occupancy |= (1 << sq)
+
+    def to_fen(self) -> str:
+        """
+        Serializa o tabuleiro atual em FEN.
+        """
+        pieces = {
+            (Color.WHITE, PieceType.PAWN): "P",
+            (Color.WHITE, PieceType.KNIGHT): "N",
+            (Color.WHITE, PieceType.BISHOP): "B",
+            (Color.WHITE, PieceType.ROOK): "R",
+            (Color.WHITE, PieceType.QUEEN): "Q",
+            (Color.WHITE, PieceType.KING): "K",
+
+            (Color.BLACK, PieceType.PAWN): "p",
+            (Color.BLACK, PieceType.KNIGHT): "n",
+            (Color.BLACK, PieceType.BISHOP): "b",
+            (Color.BLACK, PieceType.ROOK): "r",
+            (Color.BLACK, PieceType.QUEEN): "q",
+            (Color.BLACK, PieceType.KING): "k",
+        }
+
+        rows = []
+
+        for rank in range(7, -1, -1):
+            empty = 0
+            row = ""
+
+            for file in range(8):
+                sq = rank * 8 + file
+                cell = self.mailbox[sq]
+
+                if cell is None:
+                    empty += 1
+                else:
+                    if empty > 0:
+                        row += str(empty)
+                        empty = 0
+
+                    color, piece = cell
+                    row += pieces[(color, piece)]
+
+            if empty > 0:
+                row += str(empty)
+
+            rows.append(row)
+
+        board_part = "/".join(rows)
+
+        # side to move
+        side = "w" if self.side_to_move == Color.WHITE else "b"
+
+        # castling
+        castling = ""
+        if self.castling_rights & CASTLE_WHITE_K:
+            castling += "K"
+        if self.castling_rights & CASTLE_WHITE_Q:
+            castling += "Q"
+        if self.castling_rights & CASTLE_BLACK_K:
+            castling += "k"
+        if self.castling_rights & CASTLE_BLACK_Q:
+            castling += "q"
+        if castling == "":
+            castling = "-"
+
+        # en passant
+        if self.en_passant_square is None:
+            ep = "-"
+        else:
+            file = self.en_passant_square % 8
+            rank = self.en_passant_square // 8
+            ep = f"{chr(ord('a') + file)}{rank + 1}"
+
+        return f"{board_part} {side} {castling} {ep} {self.halfmove_clock} {self.fullmove_number}"
+
+
+def make_board(fen: str) -> Board:
+    return Board.from_fen(fen)
