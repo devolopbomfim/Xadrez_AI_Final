@@ -219,7 +219,7 @@ def init() -> None:
 
         # Magic Bitboards (se disponíveis)
         try:
-            from core.moves import magic_bitboards as mb
+            from core.moves.magic import magic_bitboards as mb
 
             mb.init()
             _magic_rook_attacks = getattr(mb, "rook_attacks", _fallback_rook_attacks)

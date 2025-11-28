@@ -1,13 +1,12 @@
 import pytest
 
 from core.board.board import Board
-from core.hash.zobrist import Zobrist
 from core.moves.move import Move
 
 from utils.constants import SQUARE_BB, square_index
 from utils.enums import Color, PieceType
-from core.moves.attack_tables import rook_attacks, bishop_attacks, knight_attacks, king_attacks
-from core.moves.magic_bitboards import init as init_magics
+from core.moves.tables.attack_tables import rook_attacks, bishop_attacks, knight_attacks, king_attacks
+from core.moves.magic.magic_bitboards import init as init_magics
 
 # ============================================================
 # Setup global (magics + zobrist)

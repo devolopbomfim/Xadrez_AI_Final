@@ -2,7 +2,7 @@
 import time
 import random
 
-from core.moves.magic_bitboards import (
+from core.moves.magic.magic_bitboards import (
     init,
     rook_attacks,
     bishop_attacks,

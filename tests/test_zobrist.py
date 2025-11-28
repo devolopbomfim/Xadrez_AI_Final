@@ -61,7 +61,7 @@ def test_enpassant_keys_shape():
 
 def test_zobrist_incrementality():
     """
-    h ^ Z[p] ^ Z[p] == h  (involução do XOR)
+    h ^ Z[p] ^ Z[p] == h (involução do XOR)
     """
     Zobrist.init(seed=7)
 

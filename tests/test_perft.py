@@ -1,8 +1,8 @@
 import pytest
 from core.board.board import Board
-from core.perft import perft
+from core.perft.perft import perft
 
-# Posições canônicas de perft (validadas contra python-chess)
+# Posições canónicas de perft (validadas contra python-chess)
 
 PERFT_TESTS = [
     (
@@ -62,7 +62,7 @@ def test_perft_positions(name, fen, table):
 # utilitário manual para debug
 # ------------------------------
 
-from core.perft import perft_divide
+from core.perft.perft import perft_divide
 
 def test_manual_divides_case_en_passant():
     board = Board.from_fen("rnbqkbnr/pppp1ppp/8/4pP2/8/8/PPPP2PP/RNBQKBNR b KQkq f3 0 2")

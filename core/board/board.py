@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from typing import Optional, Tuple, List
 from core.hash.zobrist import Zobrist
-from core.moves.attack_tables import knight_attacks, king_attacks
-from core.moves.magic_bitboards import bishop_attacks, rook_attacks
+from core.moves.tables.attack_tables import knight_attacks, king_attacks
+from core.moves.magic.magic_bitboards import bishop_attacks, rook_attacks
 from core.moves.move import Move
 from utils.constants import (
     CASTLE_WHITE_K, CASTLE_WHITE_Q, CASTLE_BLACK_K, CASTLE_BLACK_Q,
@@ -16,7 +16,7 @@ from utils.constants import (
 )
 from utils.enums import Color, PieceType
 
-__all__ = ["Board", "make_board"]
+__all__ = ["Board", "make_board", "square_index"]
 
 # ------------------------------------------------------------
 # Precomputed bit masks
@@ -699,6 +699,17 @@ class Board:
             self.en_passant_square = (from_sq + to_sq) // 2
 
         # ====================================================
+        # ATUALIZAÇÃO HALFMOVE / FULLMOVE (REGRA DOS 50 LANCES)
+        # ====================================================
+        # Reseta o halfmove_clock se foi movimento de peão ou captura (inclui en-passant e promo)
+        # Caso contrário incrementa em 1.
+        if piece == PieceType.PAWN or move.is_capture or (move.promotion is not None):
+            self.halfmove_clock = 0
+        else:
+            # incrementa halfmove_clock para half-move não-captura/não-peão
+            self.halfmove_clock += 1
+
+        # ====================================================
         # ATUALIZAR OCCUPANCY
         # ====================================================
         self._update_occupancy()
@@ -708,6 +719,13 @@ class Board:
         # ====================================================
         #print("movimento", self.side_to_move) # movimento Color.WHITE or BLACK
         self.side_to_move = enemy
+
+        # ====================================================
+        # FULLMOVE: incrementa após a jogada do preto
+        # ====================================================
+        # 'stm' contém quem fez o movimento antes da troca de lado.
+        if stm == Color.BLACK:
+            self.fullmove_number += 1
 
         # aplicar novo castling
         self.zobrist_key = Zobrist.xor_castling(self.zobrist_key, self.castling_rights)

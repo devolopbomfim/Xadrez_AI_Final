@@ -1,4 +1,4 @@
-# core/search/repetition.py
+# core/rules/repetition.py
 
 class RepetitionTable:
     """

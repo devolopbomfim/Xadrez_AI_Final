@@ -1,6 +1,6 @@
 # diag_random_samples.py
 import random
-from core.moves import attack_tables as at
+from core.moves.tables import attack_tables as at
 from tests.test_attack_tables import _slow_knight_attacks, _slow_king_attacks, _slow_pawn_attacks
 from utils.enums import Color
 

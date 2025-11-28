@@ -57,7 +57,7 @@ def undo_sequence(board, history):
 def compute_full_hash(board: Board) -> int:
     """
     Recalcula hash completo do board usando apenas API do Zobrist.
-    Isso valida seu hashing incremental indiretamente.
+    Isso valida o seu hashing incremental indiretamente.
     """
     h = 0
 

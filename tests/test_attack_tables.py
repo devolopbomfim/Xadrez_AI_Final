@@ -1,8 +1,8 @@
 import importlib
 import random
-from core.moves import attack_tables as at
+from core.moves.tables import attack_tables as at
 from utils.enums import Color
-from utils.constants import SQUARE_TO_FILE, SQUARE_TO_RANK
+
 
 # Slow brute-force generators used as ground-truth for tests
 def _slow_knight_attacks(square: int) -> int:
@@ -58,7 +58,7 @@ def test_tables_dimensions_and_types():
     assert len(at.PAWN_ATTACKS[Color.WHITE]) == 64
     assert len(at.PAWN_ATTACKS[Color.BLACK]) == 64
 
-    # ray masks exist (may be zeros if magics unavailable)
+    # ray masks exist (maybe zeros if magics unavailable)
     assert isinstance(at.ROOK_GEOMETRY_RAYS, list)
     assert isinstance(at.BISHOP_GEOMETRY_RAYS, list)
     assert len(at.ROOK_GEOMETRY_RAYS) == 64
@@ -74,7 +74,7 @@ def test_knight_attacks_corners_and_center():
     assert at.knight_attacks(7) == _slow_knight_attacks(7)   # H1
     assert at.knight_attacks(56) == _slow_knight_attacks(56) # A8
     assert at.knight_attacks(63) == _slow_knight_attacks(63) # H8
-    # center e.g. d4 (sq=27)
+    # Center e.g. d4 (sq=27)
     assert at.knight_attacks(27) == _slow_knight_attacks(27)
 
 def test_king_attacks_corners_and_center():
@@ -184,7 +184,7 @@ def test_sliding_consistency_with_magic_and_bruteforce():
     at.init()
     # If magics not available, this test will skip (magic module raises)
     try:
-        from core.moves import magic_bitboards as mb
+        from core.moves.magic import magic_bitboards as mb
     except Exception:
         mb = None
 

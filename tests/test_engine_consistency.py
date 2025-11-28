@@ -1,16 +1,16 @@
 import pytest
 
 from core.board.board import Board
-from core.perft import perft
+from core.perft.perft import perft
 from core.moves.legal_movegen import generate_legal_moves
-from core.moves.attack_tables import rook_attacks, bishop_attacks
-from core.moves.magic_bitboards import rook_attacks as magic_rook_attacks
-from core.moves.magic_bitboards import bishop_attacks as magic_bishop_attacks
-from utils.enums import Color, PieceType
+from core.moves.tables.attack_tables import rook_attacks, bishop_attacks
+from core.moves.magic.magic_bitboards import rook_attacks as magic_rook_attacks
+from core.moves.magic.magic_bitboards import bishop_attacks as magic_bishop_attacks
+from utils.enums import Color
 
 
 # -------------------------------
-# 1. Perft – posições de referência
+# 1. perft – posições de referência
 # -------------------------------
 
 @pytest.mark.parametrize("fen,expected", [
@@ -30,7 +30,7 @@ def test_perft_reference(fen, expected):
         # Startpos: exigimos igualdade estrita em depths baixos (referência canônica).
         if fen == "startpos":
             assert result == nodes, (
-                f"Perft mismatch at depth {depth} for startpos: got {result}, expected {nodes}"
+                f"perft mismatch at depth {depth} for startpos: got {result}, expected {nodes}"
             )
             continue
 
@@ -39,9 +39,9 @@ def test_perft_reference(fen, expected):
         # estritamente e para depth==1 apenas reportamos diferença sem falhar.
         if depth == 1:
             if result != nodes:
-                # Log informativo para depuração — não falha o teste.
+                # ‘Log’ informativo para depuração — não falha o teste.
                 pytest.skip(
-                    f"Perft depth=1 mismatch for FEN (non-startpos): got {result}, expected {nodes}. "
+                    f"perft depth=1 mismatch for FEN (non-startpos): got {result}, expected {nodes}. "
                     "Skipping strict check for depth=1 — deeper depths remain validated."
                 )
             else:
@@ -49,7 +49,7 @@ def test_perft_reference(fen, expected):
 
         # Para depth >= 2, exigimos igualdade estrita.
         assert result == nodes, (
-            f"Perft mismatch at depth {depth} for FEN {fen}: got {result}, expected {nodes}"
+            f"perft mismatch at depth {depth} for FEN {fen}: got {result}, expected {nodes}"
         )
 
 

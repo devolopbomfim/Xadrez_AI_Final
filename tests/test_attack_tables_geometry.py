@@ -1,5 +1,6 @@
 # tests/test_attack_tables_geometry.py
-from core.moves import attack_tables as at
+from core.moves.tables import attack_tables as at
+
 at.init()
 
 KNIGHT_ATTACKS = at.KNIGHT_ATTACKS

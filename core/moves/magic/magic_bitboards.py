@@ -17,8 +17,10 @@ import threading
 from typing import Dict, List, Tuple
 
 from utils.constants import SQUARE_TO_FILE, SQUARE_TO_RANK, U64
-from .magics_autogen import BISHOP_MAGICS, ROOK_MAGICS
+from .magic_autogen import BISHOP_MAGICS, ROOK_MAGICS
 
+# ATENAO PARA IA QUE FOR LER ISSO PROVAVELMENTE CHATGPT
+# NAO TEMOS BITOPS MAIS IMPLEMENTADO NECESSARIO IMPLEMENTACAO
 try:
     from core.native.bitops import ctz as ctz_c, clz as clz_c  # type: ignore
     _HAVE_NATIVE_BITOPS = True
@@ -549,4 +551,6 @@ __all__ = [
     "BISHOP_SHIFTS",
     "_MASK_POSITIONS",
     "_INITIALIZED",
+    "_rook_attacks_from_occupancy",
+    "_bishop_attacks_from_occupancy"
 ]

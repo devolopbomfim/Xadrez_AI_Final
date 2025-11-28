@@ -17,6 +17,6 @@ __pycache__/
 # OS
 .DS_Store
 
-tools/generate_magics
+tools/magics/generate_magics
 pessoal/
 logs/

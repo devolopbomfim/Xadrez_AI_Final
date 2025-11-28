@@ -1,6 +1,6 @@
 # tests/test_magic_invariants.py
-import pytest
-from core.moves import magic_bitboards as mb
+from core.moves.magic import magic_bitboards as mb
+
 
 def test_magic_index_space_is_fully_covered():
     mb.init()

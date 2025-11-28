@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import List
 from utils.constants import bit, pop_lsb
-from core.moves.attack_tables import knight_attacks, king_attacks
-from core.moves.magic_bitboards import rook_attacks, bishop_attacks
+from core.moves.tables.attack_tables import knight_attacks, king_attacks
+from core.moves.magic.magic_bitboards import rook_attacks, bishop_attacks
 from utils.enums import Color, PieceType
 from utils.constants import SQUARE_BB
 from core.moves.move import Move

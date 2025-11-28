@@ -19,7 +19,7 @@ from enum import IntEnum
 from typing import TypeAlias, Tuple
 
 # ---------------------------------------------------------------------
-# Semantic alias (contrato semântico, não é wrapper)
+# Semantic, aliás (contrato semântico, não é wrapper)
 # ---------------------------------------------------------------------
 PieceIndex: TypeAlias = int
 
@@ -85,9 +85,6 @@ class GameResult(IntEnum):
     DRAW_REPETITION = 4
     DRAW_FIFTY_MOVE = 5
     DRAW_INSUFFICIENT_MATERIAL = 6
-
-    # Generic draw catch-all (optional)
-    DRAW_OTHER = 7
 
 
 # ---------------------------------------------------------------------

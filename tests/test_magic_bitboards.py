@@ -66,7 +66,10 @@ def _slow_bishop_attacks_fallback(square, occ):
         if (occ >> sq) & 1: break
         f -= 1; r -= 1
     return attacks
-from core.moves import magic_bitboards as mb
+
+
+from core.moves.magic import magic_bitboards as mb
+
 # SQUARES not defined in constants
 SQUARES = range(64)
 
@@ -129,7 +132,6 @@ def test_no_collisions_in_tables():
 def test_rook_attacks_consistency():
     mb.init()
     for square in range(64):
-        mask = mb.ROOK_MASKS[square]
         bits = mb._MASK_POSITIONS[(square, True)]
 
         for idx in range(min(256, 1 << len(bits))):
@@ -142,7 +144,6 @@ def test_rook_attacks_consistency():
 def test_bishop_attacks_consistency():
     mb.init()
     for square in range(64):
-        mask = mb.BISHOP_MASKS[square]
         bits = mb._MASK_POSITIONS[(square, False)]
 
         for idx in range(min(256, 1 << len(bits))):

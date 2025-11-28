@@ -1,4 +1,6 @@
 # core/moves/move.py
+from __future__ import annotations
+
 from dataclasses import dataclass
 from utils.enums import PieceType
 

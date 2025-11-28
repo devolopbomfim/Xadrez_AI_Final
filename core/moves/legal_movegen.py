@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from utils.enums import Color, PieceType
 from utils.constants import U64, NOT_FILE_A, NOT_FILE_H, SQUARE_BB
-from core.moves.attack_tables import knight_attacks, king_attacks
-from core.moves.magic_bitboards import rook_attacks, bishop_attacks
+from core.moves.tables.attack_tables import knight_attacks, king_attacks
+from core.moves.magic.magic_bitboards import rook_attacks, bishop_attacks
 from core.moves.movegen import generate_pseudo_legal_moves, _gen_castling_moves
 
 BIT_ONE = 1
@@ -70,32 +70,22 @@ def _is_square_attacked(board, sq: int, by_color: Color) -> bool:
 
     return False
 
-def _is_legal_ep(board, move):
+def _is_legal_ep(board, move) -> bool:
     """
-    Verifica se um en-passant é legal SEM quebrar a API do Board.
-    Usa make_move/unmake_move ao invés de manipulação manual.
-
-    Retorna:
-        True  -> EP é legal
-        False -> EP expõe o rei (ilegal)
+    Verifica se um en-passant é legal.
+    Simula o lance (make/unmake) e usa API pública board.is_in_check.
+    Retorna True se legal, False se expõe o rei.
     """
-
     stm = board.side_to_move
-    enemy = Color.BLACK if stm == Color.WHITE else Color.WHITE
 
-    # Simula normalmente com make_move
     board.make_move(move)
+    try:
+        # usa API pública (evita warnings)
+        in_check = board.is_in_check(stm)
+    finally:
+        board.unmake_move()
 
-    # Agora verificar se o rei ficou em cheque
-    king_sq = _find_king_square(board, stm)
-    illegal = board._is_square_attacked(king_sq, enemy)
-
-    # Reverter tudo
-    board.unmake_move()
-
-    return not illegal
-
-
+    return not in_check
 
 def generate_legal_moves(board):
     """
@@ -149,11 +139,12 @@ def generate_legal_moves(board):
 
         # --- Teste de legalidade via make/unmake ---
         board.make_move(move)
-
-        king_sq = _find_king_square(board, stm)
-        in_check = board._is_square_attacked(king_sq, enemy)
-
-        board.unmake_move()
+        try:
+            # Verifica se o lado que acabou de mover (stm) ficou em cheque.
+            # Usamos API pública para reduzir acoplamento e evitar warnings.
+            in_check = board.is_in_check(stm)
+        finally:
+            board.unmake_move()
 
         if not in_check:
             legal_moves.append(move)

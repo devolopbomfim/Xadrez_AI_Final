@@ -12,10 +12,10 @@ def main():
     print("== MAGIC BITBOARDS INTEGRITY CHECK ==")
 
     try:
-        from core.moves.magics_autogen import ROOK_MAGICS, BISHOP_MAGICS
-        from core.moves import magic_bitboards as mb
+        from core.moves.magic.magic_autogen import ROOK_MAGICS, BISHOP_MAGICS
+        from core.moves.magic import magic_bitboards as mb
     except Exception as e:
-        print("ERRO: Falha ao importar módulos.")
+        print(f"ERRO: Falha ao importar módulos:{e}")
         raise
 
     # ----------------------------------------------------------
@@ -75,7 +75,7 @@ def main():
     # ----------------------------------------------------------
     # 5. Sanidade contra brute-force
     # ----------------------------------------------------------
-    from core.moves.attack_tables import rook_attacks, bishop_attacks
+    from core.moves.tables.attack_tables import rook_attacks, bishop_attacks
     print("✔ Funções rook_attacks/bishop_attacks disponíveis e importadas")
 
     # Teste simples de acesso

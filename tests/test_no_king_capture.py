@@ -1,5 +1,3 @@
-import pytest
-
 from core.board.board import Board
 from core.moves.legal_movegen import generate_legal_moves
 from utils.enums import Color, PieceType
@@ -26,7 +24,7 @@ def test_no_legal_move_can_capture_king():
             if target is not None:
                 _, piece = target
                 assert piece != PieceType.KING, (
-                    f"Movimento ilegal detectado: captura de rei: {move}"
+                    f"Movimento ilegal detected: captura de rei: {move}"
                 )
 
         # Aplica um movimento qualquer e continua
@@ -61,10 +59,6 @@ def test_no_king_direct_capture_in_custom_position():
 
 
 
-from core.board.board import Board
-from core.moves.legal_movegen import generate_legal_moves
-from utils.enums import Color, PieceType
-
 
 def _has_move(moves, from_sq, to_sq):
     return any(m.from_sq == from_sq and m.to_sq == to_sq for m in moves)
@@ -96,7 +90,7 @@ def test_king_cannot_capture_if_square_is_attacked():
     Rei branco em E4
     Peão preto em E5
     Torre preta em E8 protegendo E5
-    -> Captura é ilegal pois E5 está atacado.
+    -> Captura é ilegal, pois E5 está atacado.
     """
 
     board = Board()
