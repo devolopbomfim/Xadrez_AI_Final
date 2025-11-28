@@ -706,6 +706,7 @@ class Board:
         # ====================================================
         # TROCA DE LADO
         # ====================================================
+        #print("movimento", self.side_to_move) # movimento Color.WHITE or BLACK
         self.side_to_move = enemy
 
         # aplicar novo castling

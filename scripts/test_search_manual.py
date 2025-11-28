@@ -11,3 +11,4 @@ best_move, score = search_root(board, max_depth=3, tt=tt)
 
 print("Best move:", best_move)
 print("Score:", score)
+

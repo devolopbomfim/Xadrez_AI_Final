@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import sys
-import random
 
 # === Força acesso ao projeto ===
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import traceback
+from enum import Enum
 from typing import Optional, Dict, Tuple, List
 
 import pygame
@@ -32,9 +33,19 @@ OVERLAY_COLOR = (255, 255, 255, 180)
 BASE_DIR = os.path.dirname(__file__)
 ASSETS_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "assets"))
 
-AI_PLAYS = Color.BLACK
 MAX_DEPTH = 1
 TT_SIZE_MB = 32
+
+# ================== GAME MODES ==================
+
+class GameMode(Enum):
+    HH = 0  # Human vs Human
+    HI = 1  # Human vs AI
+    II = 2  # AI vs AI
+
+# default mode: Human vs AI, human plays White by default
+DEFAULT_GAME_MODE = GameMode.HI
+DEFAULT_HUMAN_COLOR = Color.WHITE
 
 # ================== ASSETS ==================
 
@@ -261,13 +272,14 @@ def setup_board_zobrist(board_snapshot: Board) -> None:
 class AIWorker:
     """Thread-safe worker para executar search_root em background."""
 
-    def __init__(self, tt: TranspositionTable):
+    def __init__(self, tt: TranspositionTable, name: str = "AI"):
         self.tt = tt
         self.thread: Optional[threading.Thread] = None
         self._thinking = False
         self.best_move: Optional[object] = None
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
+        self.name = name
 
     def _make_snapshot(self, board: Board) -> Board:
         # 1) deepcopy
@@ -322,7 +334,7 @@ class AIWorker:
             with self._lock:
                 self.best_move = best_move
         except Exception as e:
-            print(f"[AIWorker] Erro na IA: {repr(e)}")
+            print(f"[AIWorker:{self.name}] Erro na IA: {repr(e)}")
             traceback.print_exc()
             with self._lock:
                 self.best_move = None
@@ -438,6 +450,21 @@ class GameState:
 
         self._dirty = True
         _log_debug(f"select_piece: peça selecionada em {square} (type={piece_type}), targets={self.legal_targets}")
+
+
+# ================== HELPERS FOR MODE DECISIONS ==================
+
+
+def is_side_human(game_mode: GameMode, human_color: Color, side: Color) -> bool:
+    """Determines whether 'side' is controlled by a human given the current mode."""
+    if game_mode == GameMode.HH:
+        return True
+    if game_mode == GameMode.II:
+        return False
+    # HI: only human_color is human
+    return side == human_color
+
+
 # ================== MAIN LOOP ==================
 
 
@@ -459,7 +486,14 @@ def main() -> None:
 
         game = GameState()
         tt = TranspositionTable(size_mb=TT_SIZE_MB)
-        ai = AIWorker(tt)
+
+        # two AI workers so AI can control either or both colors independently
+        ai_white = AIWorker(tt, name="WHITE")
+        ai_black = AIWorker(tt, name="BLACK")
+
+        # mode + human color
+        game_mode = DEFAULT_GAME_MODE
+        human_color = DEFAULT_HUMAN_COLOR
 
         clock = pygame.time.Clock()
         running = True
@@ -475,19 +509,55 @@ def main() -> None:
                     running = False
                     break
 
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                    game.reset()
-                    ai.reset()
-                    continue
+                if event.type == pygame.KEYDOWN:
+                    # reset game
+                    if event.key == pygame.K_r:
+                        game.reset()
+                        ai_white.reset()
+                        ai_black.reset()
+                        continue
+
+                    # switch modes: 1=HH, 2=HI, 3=II
+                    if event.key == pygame.K_1:
+                        game_mode = GameMode.HH
+                        ai_white.reset()
+                        ai_black.reset()
+                        print("[Mode] Human vs Human")
+                        continue
+                    if event.key == pygame.K_2:
+                        game_mode = GameMode.HI
+                        ai_white.reset()
+                        ai_black.reset()
+                        print(f"[Mode] Human vs AI (human={human_color.name})")
+                        continue
+                    if event.key == pygame.K_3:
+                        game_mode = GameMode.II
+                        ai_white.reset()
+                        ai_black.reset()
+                        print("[Mode] AI vs AI")
+                        continue
+
+                    # toggle which color human plays (only relevant in HI)
+                    if event.key == pygame.K_h:
+                        # toggle human color between WHITE and BLACK
+                        human_color = Color.BLACK if human_color == Color.WHITE else Color.WHITE
+                        print(f"[Mode] human_color = {human_color.name}")
+                        # reset running AIs so new human assignment takes effect immediately
+                        ai_white.reset()
+                        ai_black.reset()
+                        continue
 
                 # mouse
                 if event.type == pygame.MOUSEBUTTONDOWN:
-                    # aceitamos input apenas quando não for turno da IA e jogo não acabado
+                    # accept input only when current side is human and game not over
                     game_result = get_game_status(game.board)
                     game_over = game_result != GameResult.ONGOING
-                    can_input = not (game_over or ai.thinking or game.board.side_to_move == AI_PLAYS)
-                    if not can_input:
+                    current_side = game.board.side_to_move
+                    side_is_human = is_side_human(game_mode, human_color, current_side)
+                    if game_over or not side_is_human:
+                        # ignore clicks when game over or when it's AI's turn
                         continue
+
 
                     if event.button == 1:
                         square = square_from_mouse(event.pos)
@@ -503,6 +573,7 @@ def main() -> None:
                                 # mover feito: força atualização de superfície
                                 game.mark_dirty()
 
+            pygame.time.wait(200)
             # lógica por frame — desenhar e IA
             screen.fill((0, 0, 0))
 
@@ -516,28 +587,44 @@ def main() -> None:
             if game_over:
                 draw_endgame_overlay(screen, font, game_result)
 
-            # IA: iniciar quando for seu turno e não estiver pensando
-            if (not game_over) and (game.board.side_to_move == AI_PLAYS):
-                #with threading.RLock():
-                    if not ai.thinking and ai.best_move is None:
-                        # passar board (AIWorker fará snapshot seguro internamente)
-                        ai.start(game.board)
-                    elif ai.is_ready():
-                        # aplicar movimento prontamente no main thread
-                        if ai.best_move is not None:
+            # AI logic: determine if side_to_move is AI and handle start/apply
+            if not game_over:
+                stm = game.board.side_to_move
+                side_is_human = is_side_human(game_mode, human_color, stm)
+                # choose correct worker
+                worker = ai_white if stm == Color.WHITE else ai_black
+
+                # se NÃO for humano, é IA que joga
+                if not side_is_human:
+                    pygame.time.wait(200)  # <<< AQUI está CORRETO
+                    # it's AI's turn
+                    # start thinking if not already started
+                    if (not worker.thinking) and (worker.best_move is None):
+                        # start with a snapshot of current board
+                        worker.start(game.board)
+                    # if ready, apply move on main thread
+                    elif worker.is_ready():
+                        if worker.best_move is not None:
                             try:
-                                game.board.make_move(ai.best_move)
+                                game.board.make_move(worker.best_move)
                                 game.mark_dirty()
                             except Exception as e:
-                                print("[Main] Erro aplicando movimento da IA:", e)
+                                print(f"[Main] Erro aplicando movimento da IA ({worker.name}):", e)
+                                traceback.print_exc()
                             finally:
-                                ai.reset()
+                                worker.reset()
+                else:
+                    # it's human's turn — ensure any AI worker for that side is not running
+                    # (prevents stray threads when switching mode)
+                    if worker.thinking or worker.best_move is not None:
+                        worker.reset()
 
             # flip display
             pygame.display.flip()
 
         # cleanup
-        ai.reset(join_timeout=0.2)
+        ai_white.reset(join_timeout=0.2)
+        ai_black.reset(join_timeout=0.2)
         pygame.quit()
 
     except FileNotFoundError as e:
@@ -553,7 +640,6 @@ def main() -> None:
             pygame.quit()
         finally:
             sys.exit(1)
-
 
 
 if __name__ == "__main__":
