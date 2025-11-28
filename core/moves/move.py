@@ -11,7 +11,6 @@ class Move:
     promotion: PieceType | None = None
 
     def to_uci(self):
-        from utils.constants import square_index
 
         files = "abcdefgh"
         ranks = "12345678"

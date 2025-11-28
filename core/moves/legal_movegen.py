@@ -1,11 +1,8 @@
 # core/moves/legal_movegen.py
-
 from __future__ import annotations
-from typing import Iterable
 
 from utils.enums import Color, PieceType
 from utils.constants import U64, NOT_FILE_A, NOT_FILE_H, SQUARE_BB
-from core.moves.move import Move
 from core.moves.attack_tables import knight_attacks, king_attacks
 from core.moves.magic_bitboards import rook_attacks, bishop_attacks
 from core.moves.movegen import generate_pseudo_legal_moves, _gen_castling_moves
@@ -98,25 +95,29 @@ def _is_legal_ep(board, move):
 
     return not illegal
 
+
+
 def generate_legal_moves(board):
     """
-    Gera e RETORNA uma LISTA de movimentos legais.
-    Corrige o bug do generator para funcionar com len() e iteração múltipla.
+    Gera e retorna uma lista de movimentos legais.
+    - Filtra movimentos que deixam o rei em cheque
+    - Bloqueia explicitamente captura de rei
+    - Corrige problemas com generator (retorna lista real)
     """
 
     stm = board.side_to_move
     enemy = Color.BLACK if stm == Color.WHITE else Color.WHITE
 
-    # 1. coletar pseudo-legais
+    # 1. Coletar pseudo-legais
     pseudo = list(generate_pseudo_legal_moves(board))
 
-    # 2. coletar castlings
+    # 2. Coletar castlings
     try:
         castlings = list(_gen_castling_moves(board))
     except Exception:
         castlings = []
 
-    # evitar duplicação
+    # Evitar duplicação
     seen = {(m.from_sq, m.to_sq, int(m.piece)) for m in pseudo}
     for c in castlings:
         key = (c.from_sq, c.to_sq, int(c.piece))
@@ -126,20 +127,27 @@ def generate_legal_moves(board):
 
     legal_moves = []
 
-    # 3. filtrar para só os legais
+    # 3. Filtrar movimentos legais
     for move in pseudo:
+
+        # --- BLOQUEIO ABSOLUTO: não permitir captura de rei ---
+        target = board.mailbox[move.to_sq]
+        if target is not None:
+            target_color, target_piece = target
+            if target_piece == PieceType.KING:
+                continue
 
         # --- En-passant: verificação especial ---
         if (
-                move.piece == PieceType.PAWN
-                and move.is_capture
-                and board.en_passant_square is not None
-                and move.to_sq == board.en_passant_square
+            move.piece == PieceType.PAWN
+            and move.is_capture
+            and board.en_passant_square is not None
+            and move.to_sq == board.en_passant_square
         ):
             if not _is_legal_ep(board, move):
                 continue
 
-        # --- test de legalidade por make/unmake ---
+        # --- Teste de legalidade via make/unmake ---
         board.make_move(move)
 
         king_sq = _find_king_square(board, stm)

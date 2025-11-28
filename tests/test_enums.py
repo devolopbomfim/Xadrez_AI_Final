@@ -24,7 +24,7 @@ def test_move_type_layout():
 
 
 def test_game_result_layout():
-    assert [r.value for r in GameResult] == [0, 1, 2, 3]
+    assert [r.value for r in GameResult] == [0, 1, 2, 3, 4, 5, 6, 7]
 
 
 def test_piece_index_mapping():

@@ -59,10 +59,10 @@ def test_tables_dimensions_and_types():
     assert len(at.PAWN_ATTACKS[Color.BLACK]) == 64
 
     # ray masks exist (may be zeros if magics unavailable)
-    assert isinstance(at.ROOK_RAY_MASKS, list)
-    assert isinstance(at.BISHOP_RAY_MASKS, list)
-    assert len(at.ROOK_RAY_MASKS) == 64
-    assert len(at.BISHOP_RAY_MASKS) == 64
+    assert isinstance(at.ROOK_GEOMETRY_RAYS, list)
+    assert isinstance(at.BISHOP_GEOMETRY_RAYS, list)
+    assert len(at.ROOK_GEOMETRY_RAYS) == 64
+    assert len(at.BISHOP_GEOMETRY_RAYS) == 64
 
 # -------------------------
 # Functional correctness (non-sliding)

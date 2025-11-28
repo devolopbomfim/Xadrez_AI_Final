@@ -1,260 +1,296 @@
-"""
-Attack tables for Xadrez_AI_Final.
-
-Objective:
-  Precompute and expose bitboard attack tables for non-sliding pieces
-  (knight, king, pawn by color) and provide a thin runtime API that
-  delegates sliding piece attacks to magic_bitboards when available.
-
-Invariants:
-  - Bitboard-first indexing A1=0 ... H8=63.
-  - Tables are deterministic and precomputed at import time via init().
-  - init() is idempotent and thread-safe.
-  - No circular import at module top-level with magic_bitboards:
-      magic_bitboards is imported lazily inside init() to avoid cycles.
-  - Runtime hot paths use local bindings and no redundant calculations.
-
-Public API:
-  init()
-  knight_attacks(sq) -> int
-  king_attacks(sq) -> int
-  pawn_attacks(sq, color) -> int
-  rook_attacks(sq, occ) -> int
-  bishop_attacks(sq, occ) -> int
-  queen_attacks(sq, occ) -> int
-  RUNTIME_TABLES / constants exported for tests
-"""
-
 from __future__ import annotations
-from typing import List, Dict
-import threading
 
-from utils.constants import U64, SQUARE_TO_FILE, SQUARE_TO_RANK
+import threading
+from typing import Dict, List, Tuple
+
+from utils.constants import U64
 from utils.enums import Color
 
+# ============================================================
 # Public tables (filled by init)
+# ============================================================
+
 KNIGHT_ATTACKS: List[int] = [0] * 64
 KING_ATTACKS: List[int] = [0] * 64
-PAWN_ATTACKS: Dict[Color, List[int]] = {Color.WHITE: [0] * 64, Color.BLACK: [0] * 64}
+PAWN_ATTACKS: Dict[Color, List[int]] = {
+    Color.WHITE: [0] * 64,
+    Color.BLACK: [0] * 64,
+}
 
-# Optional ray masks for debug/fallback (computed from magic or computed here)
-ROOK_RAY_MASKS: List[int] = [0] * 64
-BISHOP_RAY_MASKS: List[int] = [0] * 64
+# Optional geometry rays (debug / consistency)
+ROOK_GEOMETRY_RAYS: List[int] = [0] * 64
+BISHOP_GEOMETRY_RAYS: List[int] = [0] * 64
 
-# Lazy bindings to magic_bitboards runtime functions (set in init)
-_magic_rook_attacks = None  # type: ignore
-_magic_bishop_attacks = None  # type: ignore
+# Bound at init (magic or fallback)
+_magic_rook_attacks = None
+_magic_bishop_attacks = None
 
 # Initialization guard
-_INITIALIZED = False
+_INITIALIZED: bool = False
 _init_lock = threading.Lock()
 
-U64_MASK = U64
-BIT_1 = 1
+# ============================================================
+# File masks (A1 = 0 .. H8 = 63)
+# ============================================================
+
+FILE_A = 0x0101010101010101
+FILE_B = 0x0202020202020202
+FILE_G = 0x4040404040404040
+FILE_H = 0x8080808080808080
+
+FILE_AB = FILE_A | FILE_B
+FILE_GH = FILE_G | FILE_H
 
 
-# ----------------------------
-# Local helpers (pure, no imports causing cycles)
-# ----------------------------
-def _in_bounds(f: int, r: int) -> bool:
-    return 0 <= f < 8 and 0 <= r < 8
+# ============================================================
+# Precomputation helpers
+# ============================================================
 
-
-def _sq(f: int, r: int) -> int:
-    return r * 8 + f
-
-
-def _set_bit(bb: int, sq: int) -> int:
-    return bb | (BIT_1 << (sq & 63))
-
-
-# ----------------------------
-# Table builders
-# ----------------------------
-def _build_knight_attacks() -> List[int]:
+def _build_attack_table(generator) -> List[int]:
+    """
+    Gera uma tabela de ataques 64x1 a partir de um gerador (sq -> bitboard).
+    Centraliza a lógica e remove duplicidade.
+    """
     table = [0] * 64
-    knight_moves = ((1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2))
     for sq in range(64):
-        f = SQUARE_TO_FILE[sq]
-        r = SQUARE_TO_RANK[sq]
-        bb = 0
-        for df, dr in knight_moves:
-            nf, nr = f + df, r + dr
-            if _in_bounds(nf, nr):
-                bb = _set_bit(bb, _sq(nf, nr))
-        table[sq] = bb & U64_MASK
+        table[sq] = generator(sq) & U64
     return table
 
 
-def _build_king_attacks() -> List[int]:
-    table = [0] * 64
-    king_moves = ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
-    for sq in range(64):
-        f = SQUARE_TO_FILE[sq]
-        r = SQUARE_TO_RANK[sq]
-        bb = 0
-        for df, dr in king_moves:
-            nf, nr = f + df, r + dr
-            if _in_bounds(nf, nr):
-                bb = _set_bit(bb, _sq(nf, nr))
-        table[sq] = bb & U64_MASK
-    return table
+def _knight_attack_from(sq: int) -> int:
+    """Retorna o bitboard de ataques do cavalo a partir de sq."""
+    bb = 1 << sq
+    att = 0
+
+    att |= (bb << 17) & ~FILE_A
+    att |= (bb << 15) & ~FILE_H
+    att |= (bb << 10) & ~FILE_AB
+    att |= (bb << 6) & ~FILE_GH
+
+    att |= (bb >> 17) & ~FILE_H
+    att |= (bb >> 15) & ~FILE_A
+    att |= (bb >> 10) & ~FILE_GH
+    att |= (bb >> 6) & ~FILE_AB
+
+    return att
 
 
-def _build_pawn_attacks() -> Dict[Color, List[int]]:
+def _king_attack_from(sq: int) -> int:
+    """Retorna o bitboard de ataques do rei a partir de sq."""
+    bb = 1 << sq
+    att = 0
+
+    # Vertical
+    att |= (bb << 8)
+    att |= (bb >> 8)
+
+    # Horizontal + diagonais
+    att |= (bb << 1) & ~FILE_A
+    att |= (bb >> 1) & ~FILE_H
+    att |= (bb << 9) & ~FILE_A
+    att |= (bb << 7) & ~FILE_H
+    att |= (bb >> 7) & ~FILE_A
+    att |= (bb >> 9) & ~FILE_H
+
+    return att
+
+
+def _build_pawn_attack_tables() -> Dict[Color, List[int]]:
+    """Gera tabelas de ataque para peões brancos e pretos."""
     white = [0] * 64
     black = [0] * 64
+
     for sq in range(64):
-        f = SQUARE_TO_FILE[sq]
-        r = SQUARE_TO_RANK[sq]
+        bb = 1 << sq
 
-        # White pawns attack to r+1, files f-1 and f+1
-        bb_w = 0
-        if r + 1 < 8:
-            if f - 1 >= 0:
-                bb_w = _set_bit(bb_w, _sq(f - 1, r + 1))
-            if f + 1 < 8:
-                bb_w = _set_bit(bb_w, _sq(f + 1, r + 1))
-        white[sq] = bb_w & U64_MASK
+        # Peão branco
+        west_w = (bb & ~FILE_A) << 7
+        east_w = (bb & ~FILE_H) << 9
+        white[sq] = (west_w | east_w) & U64
 
-        # Black pawns attack to r-1, files f-1 and f+1
-        bb_b = 0
-        if r - 1 >= 0:
-            if f - 1 >= 0:
-                bb_b = _set_bit(bb_b, _sq(f - 1, r - 1))
-            if f + 1 < 8:
-                bb_b = _set_bit(bb_b, _sq(f + 1, r - 1))
-        black[sq] = bb_b & U64_MASK
+        # Peão preto
+        west_b = (bb & ~FILE_A) >> 9
+        east_b = (bb & ~FILE_H) >> 7
+        black[sq] = (west_b | east_b) & U64
 
     return {Color.WHITE: white, Color.BLACK: black}
 
 
+# ============================================================
+# Fallback sliding attacks (ray-walk seguro)
+# ============================================================
+
+def _fallback_sliding_attacks(
+    sq: int,
+    occ: int,
+    directions: Tuple[int, ...],
+) -> int:
+    """
+    Fallback genérico para peças deslizantes.
+
+    Usado apenas se Magic Bitboards falharem ou não estiverem disponíveis.
+    """
+    attacks = 0
+    file = sq & 7
+    rank = sq >> 3
+
+    for delta in directions:
+        s = sq
+        cf, cr = file, rank
+
+        while True:
+            s += delta
+            if s < 0 or s >= 64:
+                break
+
+            nf, nr = s & 7, s >> 3
+
+            # Detecção de wrap-around (especialmente horizontais/diagonais)
+            if abs(nf - cf) > 1 or (abs(nr - cr) > 1 and abs(delta) != 8):
+                break
+
+            bit = 1 << s
+            attacks |= bit
+
+            if occ & bit:
+                break
+
+            cf, cr = nf, nr
+
+    return attacks & U64
+
+
+def _fallback_rook_attacks(sq: int, occ: int) -> int:
+    """Fallback para torre: N, S, E, W."""
+    return _fallback_sliding_attacks(sq, occ, (8, -8, 1, -1))
+
+
+def _fallback_bishop_attacks(sq: int, occ: int) -> int:
+    """Fallback para bispo: diagonais."""
+    return _fallback_sliding_attacks(sq, occ, (9, 7, -9, -7))
+
+
+# ============================================================
+# Geometry rays sync (debug)
+# ============================================================
+
 def _compute_ray_masks_from_magic(mb_module) -> None:
     """
-    If magic_bitboards exposes masks (ROOK_MASKS/BISHOP_MASKS) we copy them for debug/use.
-    This is a no-op if not available.
+    Sincroniza máscaras geométricas (rook/bishop) se disponíveis
+    no módulo magic_bitboards.
     """
-    global ROOK_RAY_MASKS, BISHOP_RAY_MASKS
-    try:
-        # prefer direct arrays if present
-        rook_masks = getattr(mb_module, "ROOK_MASKS", None)
-        bishop_masks = getattr(mb_module, "BISHOP_MASKS", None)
-        if rook_masks is not None and len(rook_masks) == 64:
-            ROOK_RAY_MASKS = list(rook_masks)
-        if bishop_masks is not None and len(bishop_masks) == 64:
-            BISHOP_RAY_MASKS = list(bishop_masks)
-    except Exception:
-        # keep defaults (zeros) on any problem
-        pass
+    rook_masks = getattr(mb_module, "ROOK_MASKS", None)
+    if isinstance(rook_masks, (list, tuple)) and len(rook_masks) == 64:
+        ROOK_GEOMETRY_RAYS[:] = rook_masks
+
+    bishop_masks = getattr(mb_module, "BISHOP_MASKS", None)
+    if isinstance(bishop_masks, (list, tuple)) and len(bishop_masks) == 64:
+        BISHOP_GEOMETRY_RAYS[:] = bishop_masks
 
 
-# ----------------------------
-# Public init (idempotent, thread-safe)
-# ----------------------------
+# ============================================================
+# Init
+# ============================================================
+
 def init() -> None:
     """
-    Initialize attack tables and connect sliding attack runtime to magic_bitboards.
-
-    Idempotent and thread-safe.
+    Inicializa tabelas de ataque e resolve a implementação
+    de sliding attacks (Magic Bitboards ou fallback).
     """
-    global _INITIALIZED, KNIGHT_ATTACKS, KING_ATTACKS, PAWN_ATTACKS
-    global _magic_rook_attacks, _magic_bishop_attacks
+    global _INITIALIZED, _magic_rook_attacks, _magic_bishop_attacks
+
+    if _INITIALIZED:
+        return
 
     with _init_lock:
         if _INITIALIZED:
             return
 
-        # Precompute static tables (deterministic)
-        _knight = _build_knight_attacks()
-        _king = _build_king_attacks()
-        _pawn = _build_pawn_attacks()
+        # Pré-computação de ataques fixos
+        knight_table = _build_attack_table(_knight_attack_from)
+        king_table = _build_attack_table(_king_attack_from)
+        pawn_tables = _build_pawn_attack_tables()
 
-        for i in range(64):
-            KNIGHT_ATTACKS[i] = _knight[i]
-            KING_ATTACKS[i] = _king[i]
+        KNIGHT_ATTACKS[:] = knight_table
+        KING_ATTACKS[:] = king_table
 
-        for color in PAWN_ATTACKS:
-            for sq in range(64):
-                PAWN_ATTACKS[color][sq] = _pawn[color][sq]
+        for color in (Color.WHITE, Color.BLACK):
+            PAWN_ATTACKS[color][:] = pawn_tables[color]
 
-        # Lazy import of magic_bitboards to avoid circular imports at module load
+        # Magic Bitboards (se disponíveis)
         try:
-            from core.moves import magic_bitboards as mb  # local import, may raise
-        except Exception:
-            mb = None  # fallbacks will be used at runtime
+            from core.moves import magic_bitboards as mb
 
-        if mb is not None:
-            # ensure magics are initialized in magic_bitboards (no-op if already)
-            try:
-                mb.init()
-            except Exception:
-                # if mb.init fails, we will still keep non-sliding tables functional
-                pass
+            mb.init()
+            _magic_rook_attacks = getattr(mb, "rook_attacks", _fallback_rook_attacks)
+            _magic_bishop_attacks = getattr(mb, "bishop_attacks", _fallback_bishop_attacks)
 
-            # Bind sliding attack functions for fast runtime usage
-            _magic_rook_attacks = getattr(mb, "rook_attacks", None)
-            _magic_bishop_attacks = getattr(mb, "bishop_attacks", None)
-
-            # copy ray masks if available (useful for debug/tests)
             _compute_ray_masks_from_magic(mb)
+
+        except Exception:
+            # Fallback seguro
+            _magic_rook_attacks = _fallback_rook_attacks
+            _magic_bishop_attacks = _fallback_bishop_attacks
+
+        # Sanidade mínima
+        assert len(KNIGHT_ATTACKS) == 64
+        assert len(KING_ATTACKS) == 64
+        assert len(PAWN_ATTACKS[Color.WHITE]) == 64
+        assert len(PAWN_ATTACKS[Color.BLACK]) == 64
 
         _INITIALIZED = True
 
 
-# ----------------------------
-# Runtime API (hot paths)
-# ----------------------------
+# ============================================================
+# Public runtime API
+# ============================================================
+
 def knight_attacks(sq: int) -> int:
-    """Return knight attacks bitboard for square `sq` (0..63)."""
+    """Retorna ataques de cavalo a partir de sq."""
     if not _INITIALIZED:
         init()
     return KNIGHT_ATTACKS[sq]
 
 
 def king_attacks(sq: int) -> int:
-    """Return king attacks bitboard for square `sq` (0..63)."""
+    """Retorna ataques de rei a partir de sq."""
     if not _INITIALIZED:
         init()
     return KING_ATTACKS[sq]
 
 
 def pawn_attacks(sq: int, color: Color) -> int:
-    """Return pawn attack bitboard for a pawn of `color` on `sq`."""
+    """Retorna ataques de peão por cor."""
     if not _INITIALIZED:
         init()
     return PAWN_ATTACKS[color][sq]
 
 
-# Sliding delegators: use magic if available, otherwise raise (tests will provide fallbacks)
 def rook_attacks(sq: int, occ: int) -> int:
-    """
-    Return rook attacks for square `sq` given occupancy `occ`.
-    Delegates to magic_bitboards.rook_attacks when available.
-    """
+    """Retorna ataques de torre considerando ocupação."""
     if not _INITIALIZED:
         init()
-    if _magic_rook_attacks is None:
-        raise RuntimeError("Magic bitboards rook_attacks not available (init missing).")
-    # local binding for hot path
-    func = _magic_rook_attacks
-    return func(sq, occ)
+    return _magic_rook_attacks(sq, occ)
 
 
 def bishop_attacks(sq: int, occ: int) -> int:
+    """Retorna ataques de bispo considerando ocupação."""
     if not _INITIALIZED:
         init()
-    if _magic_bishop_attacks is None:
-        raise RuntimeError("Magic bitboards bishop_attacks not available (init missing).")
-    func = _magic_bishop_attacks
-    return func(sq, occ)
+    return _magic_bishop_attacks(sq, occ)
 
 
 def queen_attacks(sq: int, occ: int) -> int:
-    """Queen is rook | bishop."""
-    return rook_attacks(sq, occ) | bishop_attacks(sq, occ)
+    """Retorna ataques de dama combinando torre + bispo."""
+    if not _INITIALIZED:
+        init()
+    return _magic_rook_attacks(sq, occ) | _magic_bishop_attacks(sq, occ)
 
 
-# Export list
+# ============================================================
+# Exports
+# ============================================================
+
 __all__ = [
     "init",
     "knight_attacks",
@@ -266,7 +302,7 @@ __all__ = [
     "KNIGHT_ATTACKS",
     "KING_ATTACKS",
     "PAWN_ATTACKS",
-    "ROOK_RAY_MASKS",
-    "BISHOP_RAY_MASKS",
+    "ROOK_GEOMETRY_RAYS",
+    "BISHOP_GEOMETRY_RAYS",
     "_INITIALIZED",
 ]

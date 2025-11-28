@@ -19,7 +19,7 @@ from enum import IntEnum
 from typing import TypeAlias, Tuple
 
 # ---------------------------------------------------------------------
-# Semantic alias (não é wrapper, não é classe, é contrato semântico)
+# Semantic alias (contrato semântico, não é wrapper)
 # ---------------------------------------------------------------------
 PieceIndex: TypeAlias = int
 
@@ -61,7 +61,7 @@ class PieceType(IntEnum):
 
 
 # ---------------------------------------------------------------------
-# MoveType (ENXUTO: 6 tipos, conforme sua suíte de testes)
+# MoveType (6 tipos, alinhado com a suíte de testes)
 # ---------------------------------------------------------------------
 class MoveType(IntEnum):
     QUIET      = 0
@@ -79,7 +79,15 @@ class GameResult(IntEnum):
     ONGOING   = 0
     WHITE_WIN = 1
     BLACK_WIN = 2
-    DRAW      = 3
+
+    # Draw reasons
+    DRAW_STALEMATE = 3
+    DRAW_REPETITION = 4
+    DRAW_FIFTY_MOVE = 5
+    DRAW_INSUFFICIENT_MATERIAL = 6
+
+    # Generic draw catch-all (optional)
+    DRAW_OTHER = 7
 
 
 # ---------------------------------------------------------------------
@@ -93,15 +101,20 @@ def piece_index(piece_type: PieceType, color: Color) -> PieceIndex:
         0..5  = White: [P, N, B, R, Q, K]
         6..11 = Black: [P, N, B, R, Q, K]
 
-    Formula:
-        idx = base[color] + piece_type
+    Fórmula:
+        idx = _PIECE_INDEX_BASE[color] + piece_type
 
-    Isso é equivalente ao que Stockfish faz internamente:
-        piece = pieceType + (color << 3)   (em C/C++)
-    mas usando offset 6 pela tua decisão arquitetural.
+    Propriedades:
+        - O(1)
+        - Sem branches de controle
+        - Apenas 2 loads + 1 soma
 
-    Sem multiplicação.
-    Sem branches.
-    O(1), 2 loads, 1 soma.
+    Validação:
+        Garante tipos corretos para evitar corrupção silenciosa de índice.
     """
+    if not isinstance(piece_type, PieceType):
+        raise TypeError(f"piece_type inválido: esperado PieceType, recebido {type(piece_type).__name__}")
+    if not isinstance(color, Color):
+        raise TypeError(f"color inválido: esperado Color, recebido {type(color).__name__}")
+
     return _PIECE_INDEX_BASE[int(color)] + int(piece_type)

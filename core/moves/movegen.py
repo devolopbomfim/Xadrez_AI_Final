@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import List
-from utils.bitops import pop_lsb, bit
+from utils.constants import bit, pop_lsb
 from core.moves.attack_tables import knight_attacks, king_attacks
 from core.moves.magic_bitboards import rook_attacks, bishop_attacks
 from utils.enums import Color, PieceType

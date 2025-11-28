@@ -10,141 +10,130 @@ Design:
 """
 
 from __future__ import annotations
-from typing import Final
+from typing import Final, Tuple
 
 # =========================================================
 # 64-bit mask
 # =========================================================
 U64: Final[int] = 0xFFFFFFFFFFFFFFFF
 
-
 # =========================================================
 # Helpers básicos
 # =========================================================
 def bit(square: int) -> int:
-    """Retorna um bitboard com o bit de `square` ligado."""
+    """
+    Retorna um bitboard com o bit de `square` ligado.
+
+    Validações:
+        - square deve estar em [0, 63]
+    """
+    if not (0 <= square < 64):
+        raise ValueError(f"square fora de intervalo [0..63]: {square!r}")
     return (1 << square) & U64
 
 
 def sq(file_idx: int, rank_idx: int) -> int:
     """
-    Converte (file, rank) -> índice [0..63], A1 = 0.
+    Converte (file_idx, rank_idx) -> índice [0..63], A1 = 0.
 
     Layout:
         rank_idx * 8 + file_idx
 
-    Visualização:
-        A1 = (0,0) -> 0
-        H8 = (7,7) -> 63
+    file_idx e rank_idx devem estar em 0..7.
     """
+    if not (0 <= file_idx < 8) or not (0 <= rank_idx < 8):
+        raise ValueError(f"file_idx/rank_idx fora de intervalo: {(file_idx, rank_idx)!r}")
     return (rank_idx << 3) | file_idx
 
 
 # =========================================================
-# File masks
+# File masks (geradas programaticamente para evitar duplicação)
 # =========================================================
-FILE_A = 0x0101010101010101
-FILE_B = FILE_A << 1
-FILE_C = FILE_A << 2
-FILE_D = FILE_A << 3
-FILE_E = FILE_A << 4
-FILE_F = FILE_A << 5
-FILE_G = FILE_A << 6
-FILE_H = FILE_A << 7
-
-FILES_MASKS = (
-    FILE_A, FILE_B, FILE_C, FILE_D,
-    FILE_E, FILE_F, FILE_G, FILE_H
-)
+_FILE_A: Final[int] = 0x0101010101010101
+FILES_MASKS: Final[Tuple[int, ...]] = tuple((_FILE_A << i) & U64 for i in range(8))
+FILE_A, FILE_B, FILE_C, FILE_D, FILE_E, FILE_F, FILE_G, FILE_H = FILES_MASKS  # convenient aliases
 
 # =========================================================
-# Rank masks
+# Rank masks (geradas programaticamente)
 # =========================================================
-RANK_1 = 0x00000000000000FF
-RANK_2 = RANK_1 << 8
-RANK_3 = RANK_1 << 16
-RANK_4 = RANK_1 << 24
-RANK_5 = RANK_1 << 32
-RANK_6 = RANK_1 << 40
-RANK_7 = RANK_1 << 48
-RANK_8 = RANK_1 << 56
+_RANK_1: Final[int] = 0x00000000000000FF
+RANKS_MASKS: Final[Tuple[int, ...]] = tuple((_RANK_1 << (8 * i)) & U64 for i in range(8))
+RANK_1, RANK_2, RANK_3, RANK_4, RANK_5, RANK_6, RANK_7, RANK_8 = RANKS_MASKS  # aliases
 
-RANKS_MASKS = (
-    RANK_1, RANK_2, RANK_3, RANK_4,
-    RANK_5, RANK_6, RANK_7, RANK_8
-)
 
 # =========================================================
 # Center masks
 # =========================================================
-CENTER_4_MASK = (
+CENTER_4_MASK: Final[int] = (
     bit(sq(3, 3)) |  # D4
     bit(sq(4, 3)) |  # E4
     bit(sq(3, 4)) |  # D5
     bit(sq(4, 4))    # E5
 ) & U64
 
-EXTENDED_CENTER = (RANK_4 | RANK_5) & U64
+FILES_CDEF: Final[int] = FILE_C | FILE_D | FILE_E | FILE_F
+CLASSIC_CENTER: Final[int] = FILES_CDEF & (RANK_3 | RANK_4 | RANK_5 | RANK_6)
 
 
 # =========================================================
 # Diagonals
 # =========================================================
-DIAGONAL_A1H8 = 0x8040201008040201
-ANTI_DIAGONAL_H1A8 = 0x0102040810204080
+DIAGONAL_A1H8: Final[int] = 0x8040201008040201
+ANTI_DIAGONAL_H1A8: Final[int] = 0x0102040810204080
 
 
 # =========================================================
 # Directions (square deltas)
 # =========================================================
-NORTH = 8
-SOUTH = -8
-EAST  = 1
-WEST  = -1
+NORTH: Final[int] = 8
+SOUTH: Final[int] = -8
+EAST: Final[int] = 1
+WEST: Final[int] = -1
 
-NORTH_EAST = 9
-NORTH_WEST = 7
-SOUTH_EAST = -7
-SOUTH_WEST = -9
+NORTH_EAST: Final[int] = NORTH + EAST   # 9
+NORTH_WEST: Final[int] = NORTH + WEST   # 7
+SOUTH_EAST: Final[int] = SOUTH + EAST   # -7
+SOUTH_WEST: Final[int] = SOUTH + WEST   # -9
 
 
 # =========================================================
 # Counts (alinhadas à ABI interna)
 # =========================================================
-PIECE_TYPES = 6       # PAWN..KING
-COLOR_COUNT = 2       # WHITE/BLACK
-PIECE_COUNT = 12      # 6 * 2
-MOVE_TYPE_COUNT = 6   # fixo, ABI com enums.MoveType
+PIECE_TYPES: Final[int] = 6       # PAWN..KING
+COLOR_COUNT: Final[int] = 2       # WHITE/BLACK
+PIECE_COUNT: Final[int] = 12      # 6 * 2
+MOVE_TYPE_COUNT: Final[int] = 6   # fixo, ABI com enums.MoveType
 
 
 # =========================================================
 # Square tables
 # =========================================================
-SQUARE_TO_FILE = tuple(i & 7 for i in range(64))
-SQUARE_TO_RANK = tuple(i >> 3 for i in range(64))
-SQUARE_BB = tuple((1 << i) & U64 for i in range(64))
+SQUARE_TO_FILE: Final[Tuple[int, ...]] = tuple(i & 7 for i in range(64))
+SQUARE_TO_RANK: Final[Tuple[int, ...]] = tuple(i >> 3 for i in range(64))
+SQUARE_BB: Final[Tuple[int, ...]] = tuple(((1 << i) & U64) for i in range(64))
 
 
 # =========================================================
 # Edge masks
 # =========================================================
-NOT_FILE_A  = (~FILE_A) & U64
-NOT_FILE_H  = (~FILE_H) & U64
-NOT_FILE_AB = (~(FILE_A | FILE_B)) & U64
-NOT_FILE_GH = (~(FILE_G | FILE_H)) & U64
+NOT_FILE_A: Final[int] = (~FILE_A) & U64
+NOT_FILE_H: Final[int] = (~FILE_H) & U64
+NOT_FILE_AB: Final[int] = (~(FILE_A | FILE_B)) & U64
+NOT_FILE_GH: Final[int] = (~(FILE_G | FILE_H)) & U64
 
 
 # =========================================================
 # Pawn helpers
 # =========================================================
-PAWN_FORWARD = {
+# Mapeamento por cor: 0 = WHITE, 1 = BLACK (coerente com utils/enums.Color)
+PAWN_FORWARD: Final[dict[int, int]] = {
     0: NORTH,  # WHITE
     1: SOUTH,  # BLACK
 }
 
-PAWN_DOUBLE_RANK = {
-    0: 1,  # rank 2
-    1: 6,  # rank 7
+PAWN_DOUBLE_RANK: Final[dict[int, int]] = {
+    0: 1,  # rank index 1 == rank 2 (WHITE double)
+    1: 6,  # rank index 6 == rank 7 (BLACK double)
 }
 
 
@@ -153,62 +142,94 @@ PAWN_DOUBLE_RANK = {
 # =========================================================
 def bitboard_to_str(bb: int) -> str:
     """
-    Renderiza bitboard como grade 8x8.
+    Renderiza bitboard como grade 8x8 (string).
 
-    Exemplo visual:
-
-    8  . . . . . . . .
-    7  . . . . . . . .
-    6  . . . . . . . .
-    5  . . . X . . . .
-    4  . . . X . . . .
-    3  . . . . . . . .
-    2  . . . . . . . .
-    1  . . . . . . . .
-       a b c d e f g h
+    O formato usa '.' para casas vazias e '1' para bits ativos. A primeira
+    linha corresponde ao rank 8 e a última ao rank 1, conforme convenção.
     """
-    output = []
+    bb &= U64
+    rows = []
     for rank_idx in range(7, -1, -1):
-        row = []
         base = rank_idx << 3
+        row_chars = []
         for file_idx in range(8):
             sqi = base + file_idx
-            row.append("1" if (bb >> sqi) & 1 else ".")
-        output.append("".join(row))
-    return "\n".join(output)
+            row_chars.append("1" if ((bb >> sqi) & 1) else ".")
+        rows.append("".join(row_chars))
+    # rodapé de arquivos é opcional e deliberadamente omitido aqui para simplicidade
+    return "\n".join(rows)
 
 
 def square_index(coord: str) -> int:
     """
-    Exemplo: "d4" -> índice inteiro do bitboard
+    Converte notação algébrica curta (ex: "d4") para índice [0..63].
+
+    Validações:
+      - coord deve ter comprimento 2
+      - file entre 'a'..'h', rank entre '1'..'8'
     """
-    file = ord(coord[0].lower()) - ord("a")
-    rank = int(coord[1]) - 1
-    return (rank << 3) | file
+    if not isinstance(coord, str) or len(coord) != 2:
+        raise ValueError(f"coord deve ser string de 2 chars, ex 'd4'; recebeu: {coord!r}")
+    file_ch, rank_ch = coord[0].lower(), coord[1]
+    if file_ch < "a" or file_ch > "h":
+        raise ValueError(f"file inválido em coord: {coord!r}")
+    if rank_ch < "1" or rank_ch > "8":
+        raise ValueError(f"rank inválido em coord: {coord!r}")
+    file_idx = ord(file_ch) - ord("a")
+    rank_idx = int(rank_ch) - 1
+    return (rank_idx << 3) | file_idx
 
 
-CASTLE_WHITE_K = 1 << 0
-CASTLE_WHITE_Q = 1 << 1
-CASTLE_BLACK_K = 1 << 2
-CASTLE_BLACK_Q = 1 << 3
+def pop_lsb(bb: int) -> tuple[int, int]:
+    """
+    Remove o bit menos significativo de um bitboard.
 
-CASTLING_ALL = (
+    Retorna:
+        (novo_bb, square)
+        - novo_bb: bb sem o LSB
+        - square: índice [0..63] do bit removido
+
+    Lança ValueError se bb == 0.
+    """
+    if bb == 0:
+        raise ValueError("pop_lsb chamado com bb == 0")
+    lsb = bb & -bb
+    sq = lsb.bit_length() - 1
+    bb = bb & (bb - 1)
+    return bb, sq
+
+
+# =========================================================
+# Castling flags
+# =========================================================
+CASTLE_WHITE_K: Final[int] = 1 << 0
+CASTLE_WHITE_Q: Final[int] = 1 << 1
+CASTLE_BLACK_K: Final[int] = 1 << 2
+CASTLE_BLACK_Q: Final[int] = 1 << 3
+
+CASTLING_ALL: Final[int] = (
     CASTLE_WHITE_K |
     CASTLE_WHITE_Q |
     CASTLE_BLACK_K |
     CASTLE_BLACK_Q
 )
 
+
 # =========================================================
 # Public API
 # =========================================================
 __all__ = [
+    "U64",
     "bit",
     "sq",
     "FILES_MASKS",
     "RANKS_MASKS",
+    "FILE_A",
+    "FILE_H",
+    "RANK_1",
+    "RANK_8",
     "CENTER_4_MASK",
-    "EXTENDED_CENTER",
+    "CLASSIC_CENTER",
     "DIAGONAL_A1H8",
     "ANTI_DIAGONAL_H1A8",
     "NORTH",
@@ -233,14 +254,11 @@ __all__ = [
     "PAWN_FORWARD",
     "PAWN_DOUBLE_RANK",
     "bitboard_to_str",
-    "U64",
-    "FILE_A",
-    "FILE_H",
-    "RANK_1",
-    "RANK_8",
     "square_index",
+    "pop_lsb",
     "CASTLE_WHITE_K",
     "CASTLE_WHITE_Q",
     "CASTLE_BLACK_K",
     "CASTLE_BLACK_Q",
+    "CASTLING_ALL",
 ]

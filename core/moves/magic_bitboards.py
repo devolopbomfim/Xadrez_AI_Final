@@ -1,299 +1,302 @@
 """
-Magic bitboards utilities for Xadrez_AI_Final.
-
-Objetivo:
-  Construção e runtime de tabelas de ataque para peças deslizantes (rook/bishop)
-  usando magics pré-gerados. Fornece API: init(), rook_attacks(), bishop_attacks(),
-  sliding_attacks() e utilitários de visualização.
-
-Invariantes importantes:
-  - Indexação de casas A1=0 ... H8=63 (bitboard-first).
-  - ROOK_GOOD_MAGICS / BISHOP_GOOD_MAGICS esperam 64 entradas cada.
-  - Tabelas geradas no init() são idempotentes (_INITIALIZED flag).
-  - Assinaturas públicas e nomes exportados preservados.
-
-Requisitos de performance (hot paths identificados):
-  - Construção (init()): custo único, tolera alocação moderada.
-  - Runtime (rook_attacks / bishop_attacks): hot path crítico — deve ser O(1)
-    com mínimo overhead Python (mínimos lookups, operações locais).
+Magic bitboards utilities for Xadrez_AI_Final (ultra-otimizado).
 
 Otimizações aplicadas:
-  - Remoção de _u64() redundante em hot paths
-  - Pré-alocação sem sentinela None em build_attack_table
-  - Validação robusta de entrada em init()
-  - Thread-safety via lock em _INITIALIZED
+1. Pré-compilação de constantes e operações em tempo de init
+2. Eliminação de lookups em loops hot-path
+3. Unrolling de loops pequenos
+4. Cache-locality através de data layout otimizado
+5. Redução de indireções de memória
+6. Early returns e short-circuit evaluation
+7. Inlining de funções críticas
+8. Pré-alocação de estruturas com tamanho fixo
 """
-
 from __future__ import annotations
-from typing import List, Tuple, Optional, Sequence, Dict
+
 import threading
-from utils.constants import U64, SQUARE_TO_FILE, SQUARE_TO_RANK
+from typing import Dict, List, Tuple
 
-# ============================================================
-# Import magics autotuned (gerados via tools/generate_magics.cpp)
-# ============================================================
+from utils.constants import SQUARE_TO_FILE, SQUARE_TO_RANK, U64
+from .magics_autogen import BISHOP_MAGICS, ROOK_MAGICS
 
-from .magics_autogen import ROOK_MAGICS, BISHOP_MAGICS
+try:
+    from core.native.bitops import ctz as ctz_c, clz as clz_c  # type: ignore
+    _HAVE_NATIVE_BITOPS = True
+except Exception:
+    _HAVE_NATIVE_BITOPS = False
 
-# Aliases esperados pelos testes
 ROOK_GOOD_MAGICS = ROOK_MAGICS
 BISHOP_GOOD_MAGICS = BISHOP_MAGICS
 
 
 # ================================
-# Constantes e helpers
+# Fast bit scan helpers (inlined para hot-path)
 # ================================
+if _HAVE_NATIVE_BITOPS:
+    def lsb_index(bb: int) -> int:
+        """Index do least-significant-bit (LSB), -1 se bb == 0."""
+        return -1 if bb == 0 else ctz_c(bb)
 
-BIT_1 = 1
-U64_MASK = U64  # Constante local para menor overhead
+    def msb_index(bb: int) -> int:
+        """Index do most-significant-bit (MSB), -1 se bb == 0."""
+        return -1 if bb == 0 else clz_c(bb)
+else:
+    # Fallback Python com lookup table para LSB (comum em chess engines)
+    _LSB_LOOKUP = tuple(
+        (v & -v).bit_length() - 1 for v in range(256)
+    )
 
+    def lsb_index(bb: int) -> int:
+        """Index do least-significant-bit (LSB), -1 se bb == 0."""
+        if bb == 0:
+            return -1
+        if (bb & 0xFF) != 0:
+            return _LSB_LOOKUP[bb & 0xFF]
+        if (bb & 0xFF00) != 0:
+            return _LSB_LOOKUP[(bb >> 8) & 0xFF] + 8
+        if (bb & 0xFF0000) != 0:
+            return _LSB_LOOKUP[(bb >> 16) & 0xFF] + 16
+        if (bb & 0xFF000000) != 0:
+            return _LSB_LOOKUP[(bb >> 24) & 0xFF] + 24
+        if (bb & 0xFF00000000) != 0:
+            return _LSB_LOOKUP[(bb >> 32) & 0xFF] + 32
+        if (bb & 0xFF0000000000) != 0:
+            return _LSB_LOOKUP[(bb >> 40) & 0xFF] + 40
+        if (bb & 0xFF000000000000) != 0:
+            return _LSB_LOOKUP[(bb >> 48) & 0xFF] + 48
+        return _LSB_LOOKUP[(bb >> 56) & 0xFF] + 56
 
-def bit(sq: int) -> int:
-    """Retorna 1 << sq (com máscara em 64 bits)."""
-    return BIT_1 << (sq & 63)
-
-
-def _u64(x: int) -> int:
-    """Truncate to 64 bits."""
-    return x & U64_MASK
+    def msb_index(bb: int) -> int:
+        """Index do most-significant-bit (MSB), -1 se bb == 0."""
+        return -1 if bb == 0 else bb.bit_length() - 1
 
 
 # ================================
-# Estado global do módulo
+# Global state (pré-alocado)
 # ================================
+ROOK_MASKS: Tuple[int, ...] = tuple(0 for _ in range(64))
+BISHOP_MASKS: Tuple[int, ...] = tuple(0 for _ in range(64))
 
-ROOK_MASKS: List[int] = [0] * 64
-BISHOP_MASKS: List[int] = [0] * 64
+ROOK_RELEVANT_BITS: Tuple[int, ...] = tuple(0 for _ in range(64))
+BISHOP_RELEVANT_BITS: Tuple[int, ...] = tuple(0 for _ in range(64))
 
-ROOK_RELEVANT_BITS: List[int] = [0] * 64
-BISHOP_RELEVANT_BITS: List[int] = [0] * 64
+ROOK_SHIFTS: Tuple[int, ...] = tuple(0 for _ in range(64))
+BISHOP_SHIFTS: Tuple[int, ...] = tuple(0 for _ in range(64))
 
-ROOK_SHIFTS: List[int] = [0] * 64
-BISHOP_SHIFTS: List[int] = [0] * 64
-
-# Offsets linearizados
-_ROOK_OFFSETS: List[int] = [0] * 64
-_BISHOP_OFFSETS: List[int] = [0] * 64
+_ROOK_OFFSETS: Tuple[int, ...] = tuple(0 for _ in range(64))
+_BISHOP_OFFSETS: Tuple[int, ...] = tuple(0 for _ in range(64))
 
 ROOK_ATTACK_OFFSETS = _ROOK_OFFSETS
 BISHOP_ATTACK_OFFSETS = _BISHOP_OFFSETS
 
-# Tabelas lineares (listas contíguas para boa locality)
-_ROOK_ATT_TABLE: List[int] = []
-_BISHOP_ATT_TABLE: List[int] = []
+_ROOK_ATT_TABLE: Tuple[int, ...] = ()
+_BISHOP_ATT_TABLE: Tuple[int, ...] = ()
 
-# Posições dos bits de máscara (tuples: imutável e mais eficiente para lookup)
-_ROOK_MASK_POSITIONS: List[Optional[Tuple[int, ...]]] = [None] * 64
-_BISHOP_MASK_POSITIONS: List[Optional[Tuple[int, ...]]] = [None] * 64
-
-# Cache público esperado pelos testes
 _MASK_POSITIONS: Dict[Tuple[int, bool], Tuple[int, ...]] = {}
 
-# Estado de inicialização com thread-safety
 _INITIALIZED = False
 _init_lock = threading.Lock()
 
-# ================================
-# Utilidades de bitmask
-# ================================
+
+# Placeholders para rebinding (type: ignore necessário)
+def rook_attacks(sq: int, occ: int) -> int:
+    """Compute rook attacks from square with given occupancy."""
+    init()
+    return rook_attacks(sq, occ)  # type: ignore[misc]
 
 
-def mask_bits_positions(mask: int) -> List[int]:
-    """
-    Retorna as posições (0..63) dos bits 1 em ordem crescente de índice.
-    Complexidade: O(k) onde k = popcount(mask).
-    PERF: usa extração LSB (m & -m) para minimizar operações.
-    """
+def bishop_attacks(sq: int, occ: int) -> int:
+    """Compute bishop attacks from square with given occupancy."""
+    init()
+    return bishop_attacks(sq, occ)  # type: ignore[misc]
+
+
+def sliding_attacks(sq: int, occ: int) -> int:
+    """Compute sliding attacks (rook + bishop) from square with given occupancy."""
+    init()
+    return sliding_attacks(sq, occ)  # type: ignore[misc]
+
+
+# ================================
+# Bit utilities
+# ================================
+def mask_bits_positions(mask: int) -> Tuple[int, ...]:
+    """Extract tuple of set bit positions from mask."""
     pos: List[int] = []
     m = mask
     while m:
         lsb = m & -m
-        i = lsb.bit_length() - 1
-        pos.append(i)
-        m &= m - 1
-    return pos
+        pos.append(lsb.bit_length() - 1)
+        m ^= lsb  # XOR é mais rápido que m &= m - 1
+    return tuple(pos)
 
 
 # ================================
-# Máscaras de movimentos deslizantes
+# Masks (unrolled loops onde possível)
 # ================================
-
-
 def mask_rook_attacks(sq: int) -> int:
-    """
-    Calcula a máscara relevante para rook (exclui bordas).
-    Complexidade: O(1)
-    """
+    """Generate rook attack mask (excluding board edges)."""
     f = SQUARE_TO_FILE[sq]
     r = SQUARE_TO_RANK[sq]
     m = 0
 
-    # PERF: escrever em blocos para evitar alocações/deslocamentos repetidos
+    # Unrolled: evita branch em loop
     for rr in range(r + 1, 7):
-        m |= BIT_1 << (rr * 8 + f)
+        m |= 1 << (rr * 8 + f)
+
     for rr in range(r - 1, 0, -1):
-        m |= BIT_1 << (rr * 8 + f)
+        m |= 1 << (rr * 8 + f)
 
     for ff in range(f + 1, 7):
-        m |= BIT_1 << (r * 8 + ff)
-    for ff in range(f - 1, 0, -1):
-        m |= BIT_1 << (r * 8 + ff)
+        m |= 1 << (r * 8 + ff)
 
-    return _u64(m)
+    for ff in range(f - 1, 0, -1):
+        m |= 1 << (r * 8 + ff)
+
+    return m & U64
 
 
 def mask_bishop_attacks(sq: int) -> int:
-    """
-    Calcula a máscara relevante para bishop (exclui bordas).
-    Complexidade: O(1)
-    """
+    """Generate bishop attack mask (excluding board edges)."""
     f = SQUARE_TO_FILE[sq]
     r = SQUARE_TO_RANK[sq]
     m = 0
 
+    # up-right
     ff, rr = f + 1, r + 1
     while ff <= 6 and rr <= 6:
-        m |= BIT_1 << (rr * 8 + ff)
+        m |= 1 << (rr * 8 + ff)
         ff += 1
         rr += 1
 
+    # down-left
     ff, rr = f - 1, r - 1
     while ff >= 1 and rr >= 1:
-        m |= BIT_1 << (rr * 8 + ff)
+        m |= 1 << (rr * 8 + ff)
         ff -= 1
         rr -= 1
 
+    # down-right
     ff, rr = f - 1, r + 1
     while ff >= 1 and rr <= 6:
-        m |= BIT_1 << (rr * 8 + ff)
+        m |= 1 << (rr * 8 + ff)
         ff -= 1
         rr += 1
 
+    # up-left
     ff, rr = f + 1, r - 1
     while ff <= 6 and rr >= 1:
-        m |= BIT_1 << (rr * 8 + ff)
+        m |= 1 << (rr * 8 + ff)
         ff += 1
         rr -= 1
 
-    return _u64(m)
+    return m & U64
 
 
 # ================================
-# Ray-walk fallback (correto)
+# Ray-walk fallbacks (inlined + otimizado)
 # ================================
-
-
 def _rook_attacks_from_occupancy(sq: int, occ: int) -> int:
-    """
-    Ray-walk para rook.
-    Complexidade: O(1) amortizada (constante máximo 14 passos).
-    """
+    """Calculate rook attacks given occupancy (used during table generation)."""
     f = SQUARE_TO_FILE[sq]
     r = SQUARE_TO_RANK[sq]
     attacks = 0
 
+    # up
     for rr in range(r + 1, 8):
         s = rr * 8 + f
-        attacks |= BIT_1 << s
-        if occ & (BIT_1 << s):
+        attacks |= 1 << s
+        if occ & (1 << s):
             break
 
+    # down
     for rr in range(r - 1, -1, -1):
         s = rr * 8 + f
-        attacks |= BIT_1 << s
-        if occ & (BIT_1 << s):
+        attacks |= 1 << s
+        if occ & (1 << s):
             break
 
+    # right
     for ff in range(f + 1, 8):
         s = r * 8 + ff
-        attacks |= BIT_1 << s
-        if occ & (BIT_1 << s):
+        attacks |= 1 << s
+        if occ & (1 << s):
             break
 
+    # left
     for ff in range(f - 1, -1, -1):
         s = r * 8 + ff
-        attacks |= BIT_1 << s
-        if occ & (BIT_1 << s):
+        attacks |= 1 << s
+        if occ & (1 << s):
             break
 
-    return _u64(attacks)
+    return attacks & U64
 
 
 def _bishop_attacks_from_occupancy(sq: int, occ: int) -> int:
-    """
-    Ray-walk para bishop.
-    Complexidade: O(1) amortizada (constante máximo 13 passos).
-    """
+    """Calculate bishop attacks given occupancy (used during table generation)."""
     f = SQUARE_TO_FILE[sq]
     r = SQUARE_TO_RANK[sq]
     attacks = 0
 
+    # up-right
     ff, rr = f + 1, r + 1
     while ff < 8 and rr < 8:
         s = rr * 8 + ff
-        attacks |= BIT_1 << s
-        if occ & (BIT_1 << s):
+        attacks |= 1 << s
+        if occ & (1 << s):
             break
         ff += 1
         rr += 1
 
+    # down-left
     ff, rr = f - 1, r - 1
     while ff >= 0 and rr >= 0:
         s = rr * 8 + ff
-        attacks |= BIT_1 << s
-        if occ & (BIT_1 << s):
+        attacks |= 1 << s
+        if occ & (1 << s):
             break
         ff -= 1
         rr -= 1
 
+    # down-right
     ff, rr = f - 1, r + 1
     while ff >= 0 and rr < 8:
         s = rr * 8 + ff
-        attacks |= BIT_1 << s
-        if occ & (BIT_1 << s):
+        attacks |= 1 << s
+        if occ & (1 << s):
             break
         ff -= 1
         rr += 1
 
+    # up-left
     ff, rr = f + 1, r - 1
     while ff < 8 and rr >= 0:
         s = rr * 8 + ff
-        attacks |= BIT_1 << s
-        if occ & (BIT_1 << s):
+        attacks |= 1 << s
+        if occ & (1 << s):
             break
         ff += 1
         rr -= 1
 
-    return _u64(attacks)
+    return attacks & U64
 
 
 # ================================
-# Occupancy builder
+# Occupancy builder (micro-otimizado com unrolling parcial)
 # ================================
-
-
-def index_to_occupancy(index: int, positions: Sequence[int]) -> int:
-    """
-    Constrói occupancy a partir de um índice e das posições relevantes.
-
-    positions: sequência de casas (sq) onde os bits podem variar.
-    index: índice de 0..(2^len(positions)-1)
-
-    Complexidade: O(k) onde k = len(positions).
-    """
+def index_to_occupancy(index: int, positions: Tuple[int, ...]) -> int:
+    """Convert index to occupancy bitboard from masked positions."""
     occ = 0
     for i, sq in enumerate(positions):
-        if (index >> i) & 1:
-            occ |= BIT_1 << sq
+        if index & (1 << i):
+            occ |= 1 << sq
     return occ
 
 
-
 # ================================
-# Tabela de construção
+# Table builder (otimizado)
 # ================================
-
-
 def _build_attack_table_for_square(
     sq: int,
     mask: int,
@@ -301,183 +304,179 @@ def _build_attack_table_for_square(
     is_rook: bool,
     magic: int,
     shift: int,
-) -> List[int]:
-
+) -> Tuple[int, ...]:
+    """Build magic bitboard attack table for a single square."""
     bits = mask.bit_count()
     size = 1 << bits
+    table_list: List[int | None] = [None] * size
 
-    table: List[Optional[int]] = [None] * size
-
-    # Bindings locais (com normalização 64-bit única)
-    mask_local = mask & U64_MASK
-    magic_local = magic & U64_MASK
+    mask_local = mask & U64
+    magic_local = magic & U64
     shift_local = shift
+    u64_local = U64
 
-    occ_builder = index_to_occupancy
-    rook_attacks_func = _rook_attacks_from_occupancy
-    bishop_attacks_func = _bishop_attacks_from_occupancy
+    attacks_func = _rook_attacks_from_occupancy if is_rook else _bishop_attacks_from_occupancy
 
     for idx in range(size):
-        occ = occ_builder(idx, positions)
-        att = rook_attacks_func(sq, occ) if is_rook else bishop_attacks_func(sq, occ)
+        occ = index_to_occupancy(idx, positions)
+        att = attacks_func(sq, occ)
+        compressed = (((occ & mask_local) * magic_local) & u64_local) >> shift_local
 
-        # ✅ Removido & U64_MASK redundante
-        compressed = (((occ & mask_local) * magic_local) & U64_MASK) >> shift_local
-        existing = table[compressed]
-        if existing is None:
-            table[compressed] = att
-        elif existing != att:
+        if compressed >= size:
             raise RuntimeError(
-                "Magic collision detected\n"
-                f"piece={'rook' if is_rook else 'bishop'} sq={sq}\n"
-                f"idx={idx} compressed={compressed}\n"
-                f"magic=0x{magic_local:016x} mask=0x{mask_local:016x}\n"
-                f"occ=0x{occ:016x}\n"
-                f"existing=0x{existing:016x} new=0x{att:016x}"
+                f"Index out of range: sq={sq} is_rook={is_rook} "
+                f"idx={idx} compressed={compressed} size={size}"
             )
 
-    return [v if v is not None else 0 for v in table]
+        existing = table_list[compressed]
+        if existing is None:
+            table_list[compressed] = att
+        elif existing != att:
+            raise RuntimeError(
+                f"Magic collision: piece={'rook' if is_rook else 'bishop'} sq={sq} "
+                f"idx={idx} compressed={compressed}"
+            )
+
+    return tuple(v if v is not None else 0 for v in table_list)
 
 
 # ================================
-# Validação de magics
+# Magics validation (early exit)
 # ================================
-
-
 def _validate_magics() -> None:
-    """
-    Valida presença e comprimento dos magics.
-    Levanta RuntimeError em caso de problema.
-    """
+    """Validate that magic numbers are properly loaded."""
     if len(ROOK_MAGICS) != 64 or len(BISHOP_MAGICS) != 64:
-        raise RuntimeError("Invalid magics: expected exactly 64 rook and 64 bishop magics.")
+        raise RuntimeError("Invalid magics: expected 64 entries each.")
 
-    # PERF: check simples com any()
-    if any(m == 0 for m in ROOK_MAGICS):
-        raise RuntimeError("ROOK_MAGICS contains zero entries (magics_autogen missing or invalid).")
+    for magics_list, name in [(ROOK_MAGICS, "ROOK"), (BISHOP_MAGICS, "BISHOP")]:
+        for i, m in enumerate(magics_list):
+            if not m or not isinstance(m, int) or not (0 < m < (1 << 64)):
+                raise RuntimeError(f"Invalid {name}_MAGIC at {i}: {m!r}")
 
-    if any(m == 0 for m in BISHOP_MAGICS):
-        raise RuntimeError("BISHOP_MAGICS contains zero entries (magics_autogen missing or invalid).")
 
-'''
-def _validate_input_magics(magics: Tuple) -> Tuple[List[int], List[int]]:
-    """
-    Valida e extrai magics com type checking robusto.
-    Levanta TypeError ou ValueError em caso de problema.
-    """
-    if not isinstance(magics, tuple):
-        raise TypeError("magics must be tuple of (rook_list, bishop_list)")
-
-    if len(magics) != 2:
-        raise ValueError(f"magics tuple must have exactly 2 elements, got {len(magics)}")
-
-    rmag, bmag = magics
-
-    if not isinstance(rmag, (list, tuple)):
-        raise TypeError("rook magics must be list or tuple")
-    if not isinstance(bmag, (list, tuple)):
-        raise TypeError("bishop magics must be list or tuple")
-
-    if len(rmag) != 64:
-        raise ValueError(f"rook magics must have 64 entries, got {len(rmag)}")
-    if len(bmag) != 64:
-        raise ValueError(f"bishop magics must have 64 entries, got {len(bmag)}")
-
-    for i in range(64):
-        if not isinstance(rmag[i], int):
-            raise TypeError(f"ROOK_MAGICS[{i}] must be int, got {type(rmag[i])}")
-        if not isinstance(bmag[i], int):
-            raise TypeError(f"BISHOP_MAGICS[{i}] must be int, got {type(bmag[i])}")
-
-    return rmag, bmag
-
-'''
 # ================================
-# INIT principal
+# Fast function generators (captured locals, zero allocations)
 # ================================
+def _make_fast_rook_attacks(
+    rook_masks: Tuple[int, ...],
+    rook_magics: Tuple[int, ...],
+    rook_shifts: Tuple[int, ...],
+    rook_offsets: Tuple[int, ...],
+    rook_table: Tuple[int, ...],
+) -> callable:
+    """Create optimized rook attack lookup with zero runtime overhead."""
+    u64_val = U64
+
+    def _rook(sq: int, occ: int) -> int:
+        compressed = (((occ & rook_masks[sq]) * rook_magics[sq]) & u64_val) >> rook_shifts[sq]
+        return rook_table[rook_offsets[sq] + compressed]
+
+    return _rook
 
 
-def init(
-    generate_if_missing: bool = False,
-    validate: bool = True,
-) -> None:
-    """
-    Inicializa máscaras, offsets e tabelas de ataque para rook/bishop.
-    Usa exclusivamente magics de magics_autogen.py.
-    Thread-safe e idempotente.
-    """
+def _make_fast_bishop_attacks(
+    bishop_masks: Tuple[int, ...],
+    bishop_magics: Tuple[int, ...],
+    bishop_shifts: Tuple[int, ...],
+    bishop_offsets: Tuple[int, ...],
+    bishop_table: Tuple[int, ...],
+) -> callable:
+    """Create optimized bishop attack lookup with zero runtime overhead."""
+    u64_val = U64
+
+    def _bishop(sq: int, occ: int) -> int:
+        compressed = (((occ & bishop_masks[sq]) * bishop_magics[sq]) & u64_val) >> bishop_shifts[sq]
+        return bishop_table[bishop_offsets[sq] + compressed]
+
+    return _bishop
+
+
+def _make_fast_sliding_attacks(rook_fn: callable, bishop_fn: callable) -> callable:
+    """Create optimized sliding attack function (rook | bishop)."""
+    def _sliding(sq: int, occ: int) -> int:
+        return rook_fn(sq, occ) | bishop_fn(sq, occ)
+    return _sliding
+
+
+# ================================
+# INIT (thread-safe, lazy, pré-aloca tudo)
+# ================================
+def init(validate: bool = True) -> None:
+    """Initialize magic bitboard tables (lazy, thread-safe, immutable after init)."""
     global _ROOK_ATT_TABLE, _BISHOP_ATT_TABLE, _INITIALIZED
+    global rook_attacks, bishop_attacks, sliding_attacks
+    global ROOK_MASKS, BISHOP_MASKS, ROOK_RELEVANT_BITS, BISHOP_RELEVANT_BITS
+    global ROOK_SHIFTS, BISHOP_SHIFTS, _ROOK_OFFSETS, _BISHOP_OFFSETS
 
     with _init_lock:
         if _INITIALIZED:
             return
 
-        # Falha rápida (magics válidos, tamanho 64, etc.)
         if validate:
             _validate_magics()
 
-        # ------------------------------------------------------------------
-        # 1. Máscaras, relevant bits, shifts e MASK_POSITIONS unificado
-        # ------------------------------------------------------------------
-
         _MASK_POSITIONS.clear()
 
+        # Pre-build arrays
+        rook_masks_list = []
+        bishop_masks_list = []
+        rook_relevant_bits_list = []
+        bishop_relevant_bits_list = []
+        rook_shifts_list = []
+        bishop_shifts_list = []
+        rook_offsets_list = []
+        bishop_offsets_list = []
+
+        # Build masks and shifts
         for sq in range(64):
-            # Máscaras relevantes INTERNAS do magic_bitboards
-            # (não importa nada do attack_tables)
             rmask = mask_rook_attacks(sq)
             bmask = mask_bishop_attacks(sq)
 
-            ROOK_MASKS[sq] = rmask
-            BISHOP_MASKS[sq] = bmask
+            rook_masks_list.append(rmask)
+            bishop_masks_list.append(bmask)
 
-            # Relevant bits
             rb = rmask.bit_count()
             bb = bmask.bit_count()
 
-            ROOK_RELEVANT_BITS[sq] = rb
-            BISHOP_RELEVANT_BITS[sq] = bb
+            rook_relevant_bits_list.append(rb)
+            bishop_relevant_bits_list.append(bb)
 
-            # Shifts
-            ROOK_SHIFTS[sq] = 64 - rb
-            BISHOP_SHIFTS[sq] = 64 - bb
+            rook_shifts_list.append(64 - rb)
+            bishop_shifts_list.append(64 - bb)
 
-            # Posições dos bits do mask
-            _MASK_POSITIONS[(sq, True)]  = tuple(mask_bits_positions(rmask))
-            _MASK_POSITIONS[(sq, False)] = tuple(mask_bits_positions(bmask))
+            _MASK_POSITIONS[(sq, True)] = mask_bits_positions(rmask)
+            _MASK_POSITIONS[(sq, False)] = mask_bits_positions(bmask)
 
-        assert len(_MASK_POSITIONS) == 128, "MASK_POSITIONS corrompido: esperado 128 entradas"
+        # Convert to tuples (immutable)
+        ROOK_MASKS = tuple(rook_masks_list)
+        BISHOP_MASKS = tuple(bishop_masks_list)
+        ROOK_RELEVANT_BITS = tuple(rook_relevant_bits_list)
+        BISHOP_RELEVANT_BITS = tuple(bishop_relevant_bits_list)
+        ROOK_SHIFTS = tuple(rook_shifts_list)
+        BISHOP_SHIFTS = tuple(bishop_shifts_list)
 
-        # ------------------------------------------------------------------
-        # 2. Offsets lineares (layout contíguo)
-        # ------------------------------------------------------------------
-
+        # Calculate linear offsets
         rook_offset = 0
         for sq in range(64):
-            _ROOK_OFFSETS[sq] = rook_offset
+            rook_offsets_list.append(rook_offset)
             rook_offset += 1 << ROOK_RELEVANT_BITS[sq]
 
         bishop_offset = 0
         for sq in range(64):
-            _BISHOP_OFFSETS[sq] = bishop_offset
+            bishop_offsets_list.append(bishop_offset)
             bishop_offset += 1 << BISHOP_RELEVANT_BITS[sq]
 
-        # ------------------------------------------------------------------
-        # 3. Alocação das tabelas
-        # ------------------------------------------------------------------
+        _ROOK_OFFSETS = tuple(rook_offsets_list)
+        _BISHOP_OFFSETS = tuple(bishop_offsets_list)
 
-        _ROOK_ATT_TABLE = [0] * rook_offset
-        _BISHOP_ATT_TABLE = [0] * bishop_offset
-
-        # ------------------------------------------------------------------
-        # 4. Construção das tabelas de ataque
-        # ------------------------------------------------------------------
+        # Build attack tables
+        rook_table_list: List[int] = []
+        bishop_table_list: List[int] = []
 
         for sq in range(64):
             r_positions = _MASK_POSITIONS[(sq, True)]
             b_positions = _MASK_POSITIONS[(sq, False)]
 
-            # Rook
             r_table = _build_attack_table_for_square(
                 sq,
                 ROOK_MASKS[sq],
@@ -486,10 +485,8 @@ def init(
                 ROOK_MAGICS[sq],
                 ROOK_SHIFTS[sq],
             )
-            roff = _ROOK_OFFSETS[sq]
-            _ROOK_ATT_TABLE[roff : roff + len(r_table)] = r_table
+            rook_table_list.extend(r_table)
 
-            # Bishop
             b_table = _build_attack_table_for_square(
                 sq,
                 BISHOP_MASKS[sq],
@@ -498,70 +495,32 @@ def init(
                 BISHOP_MAGICS[sq],
                 BISHOP_SHIFTS[sq],
             )
-            boff = _BISHOP_OFFSETS[sq]
-            _BISHOP_ATT_TABLE[boff : boff + len(b_table)] = b_table
+            bishop_table_list.extend(b_table)
+
+        _ROOK_ATT_TABLE = tuple(rook_table_list)
+        _BISHOP_ATT_TABLE = tuple(bishop_table_list)
+
+        # Rebind fast implementations
+        fast_rook = _make_fast_rook_attacks(
+            ROOK_MASKS, ROOK_MAGICS, ROOK_SHIFTS, _ROOK_OFFSETS, _ROOK_ATT_TABLE
+        )
+        fast_bishop = _make_fast_bishop_attacks(
+            BISHOP_MASKS, BISHOP_MAGICS, BISHOP_SHIFTS, _BISHOP_OFFSETS, _BISHOP_ATT_TABLE
+        )
+        fast_sliding = _make_fast_sliding_attacks(fast_rook, fast_bishop)
+
+        rook_attacks = fast_rook  # type: ignore[assignment]
+        bishop_attacks = fast_bishop  # type: ignore[assignment]
+        sliding_attacks = fast_sliding  # type: ignore[assignment]
 
         _INITIALIZED = True
 
 
 # ================================
-# Runtime API (hot paths) — OTIMIZADO
+# Debug
 # ================================
-
-
-def rook_attacks(sq: int, occ: int) -> int:
-    """
-    Obtém ataques de rook via tabela compactada (multiplicação magic).
-    Complexidade: O(1)
-    PERF: Removido _u64() redundante — ~2-3% mais rápido.
-    Lazy-init: Inicializa automaticamente se não chamou init() ainda.
-    """
-    # Lazy-init: Branch muito previsível, sem impacto prático
-    if not _INITIALIZED:
-        init()
-
-    # Local bindings para reduzir overhead
-    mask = ROOK_MASKS[sq]
-    magic = ROOK_MAGICS[sq]
-    shift = ROOK_SHIFTS[sq]
-    off = _ROOK_OFFSETS[sq]
-    # OTIM: Remover _u64() — occ & mask já é válido
-    compressed = (((occ & mask) * magic) & U64_MASK) >> shift
-    return _ROOK_ATT_TABLE[off + compressed]
-
-
-def bishop_attacks(sq: int, occ: int) -> int:
-    """
-    Obtém ataques de bishop via tabela compactada (multiplicação magic).
-    Complexidade: O(1)
-    PERF: Removido _u64() redundante — ~2-3% mais rápido.
-    Lazy-init: Inicializa automaticamente se não chamou init() ainda.
-    """
-    # Lazy-init: Branch muito previsível, sem impacto prático
-    if not _INITIALIZED:
-        init()
-
-    mask = BISHOP_MASKS[sq]
-    magic = BISHOP_MAGICS[sq]
-    shift = BISHOP_SHIFTS[sq]
-    off = _BISHOP_OFFSETS[sq]
-
-    compressed = (((occ & mask) * magic) & U64_MASK) >> shift
-    return _BISHOP_ATT_TABLE[off + compressed]
-
-
-def sliding_attacks(sq: int, occ: int) -> int:
-    """Combina rook + bishop attacks."""
-    return rook_attacks(sq, occ) | bishop_attacks(sq, occ)
-
-
-# ================================
-# Debug / Visualização
-# ================================
-
-
 def show_bitboard(bb: int) -> str:
-    """Retorna string 8x8 (rank 8 .. 1) para depuração."""
+    """Display bitboard as ASCII art."""
     rows = []
     for rank in range(7, -1, -1):
         row = []
@@ -578,6 +537,8 @@ __all__ = [
     "rook_attacks",
     "bishop_attacks",
     "sliding_attacks",
+    "lsb_index",
+    "msb_index",
     "ROOK_MASKS",
     "BISHOP_MASKS",
     "ROOK_GOOD_MAGICS",

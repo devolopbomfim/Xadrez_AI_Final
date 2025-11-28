@@ -6,22 +6,13 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple, List
-
+from core.hash.zobrist import Zobrist
 from core.moves.attack_tables import knight_attacks, king_attacks
 from core.moves.magic_bitboards import bishop_attacks, rook_attacks
 from core.moves.move import Move
 from utils.constants import (
-    CASTLE_WHITE_K,
-    CASTLE_WHITE_Q,
-    CASTLE_BLACK_K,
-    CASTLE_BLACK_Q,
-)
-from utils.constants import (
-    PIECE_COUNT,
-    COLOR_COUNT,
-    NOT_FILE_H,
-    NOT_FILE_A,
-    square_index,
+    CASTLE_WHITE_K, CASTLE_WHITE_Q, CASTLE_BLACK_K, CASTLE_BLACK_Q,
+    PIECE_COUNT, COLOR_COUNT, NOT_FILE_H, NOT_FILE_A, square_index
 )
 from utils.enums import Color, PieceType
 
@@ -37,6 +28,7 @@ SQUARE_BB: tuple[int, ...] = tuple(1 << sq for sq in range(64))
 def _sq_bit(square: int) -> int:
     """Return the bitboard mask for `square`. Uses precomputed table for speed."""
     return SQUARE_BB[square]
+
 
 # mailbox cell: None | (Color, PieceType)
 MailboxCell = Optional[Tuple[Color, PieceType]]
@@ -67,23 +59,18 @@ class Board:
     """
 
     __slots__ = (
-        "bitboards",
-        "occupancy",
-        "all_occupancy",
-        "mailbox",
-        "side_to_move",
-        "_state_stack",
-        "zobrist_key",
-        "castling_rights",
-        "en_passant_square",
-        "halfmove_clock",
-        "fullmove_number",
+        "bitboards", "occupancy", "all_occupancy", "mailbox",
+        "side_to_move", "_state_stack", "zobrist_key", "castling_rights",
+        "en_passant_square", "halfmove_clock", "fullmove_number"
     )
 
     def __init__(self, setup: bool = True) -> None:
+        self.zobrist_key = 0
         # bitboards[color][piece] -> uint64
         # PERF: use list-of-lists for mutability; inner lists are small and fixed-length.
-        self.bitboards: List[List[int]] = [[0 for _ in range(PIECE_COUNT)] for _ in range(COLOR_COUNT)]
+        self.bitboards: List[List[int]] = [
+            [0 for _ in range(PIECE_COUNT)] for _ in range(COLOR_COUNT)
+        ]
         # occupancy[color] -> uint64
         self.occupancy: List[int] = [0, 0]
         # all occupancy
@@ -91,17 +78,50 @@ class Board:
         # mailbox[64] -> None | (Color, PieceType)
         self.mailbox: List[MailboxCell] = [None] * 64
 
-        self._state_stack = []  # moved BEFORE validate()
-        self.side_to_move = Color.WHITE
-        self.castling_rights = 0
-        self.en_passant_square = None
-        self.halfmove_clock = 0
-        self.fullmove_number = 1
+        self._state_stack: List[Tuple] = []
+        self.side_to_move: Color = Color.WHITE
+        self.castling_rights: int = 0
+        self.en_passant_square: Optional[int] = None
+        self.halfmove_clock: int = 0
+        self.fullmove_number: int = 1
 
         if setup:
             self._set_starting_position()
 
         self.validate()
+        Zobrist.ensure_initialized()  # garante tabelas
+        self.zobrist_key = self.compute_zobrist()
+
+    def compute_zobrist(self) -> int:
+        """Recalcula o hash Zobrist completo do tabuleiro."""
+        h = 0
+
+        # Peças
+        for color in Color:
+            ci = int(color)
+            for piece in PieceType:
+                pi = int(piece)
+                bb = self.bitboards[ci][pi]
+                piece_index = ci * 6 + pi  # 0..11
+
+                while bb:
+                    lsb = bb & -bb
+                    sq = lsb.bit_length() - 1
+                    h = Zobrist.xor_piece(h, piece_index, sq)
+                    bb ^= lsb
+
+        # Castling
+        h = Zobrist.xor_castling(h, self.castling_rights)
+
+        # En passant
+        if self.en_passant_square is not None:
+            h = Zobrist.xor_enpassant(h, self.en_passant_square)
+
+        # Side to move
+        if self.side_to_move == Color.BLACK:
+            h = Zobrist.xor_side(h)
+
+        return h
 
     # ------------------------------------------------------------
     # Core operations
@@ -120,38 +140,61 @@ class Board:
         self.all_occupancy = 0
         # PERF: recreate mailbox list (fast) instead of mutating each entry.
         self.mailbox = [None] * 64
-        self.side_to_move: Color = Color.WHITE
+        self.side_to_move = Color.WHITE
         self.castling_rights = 0
         self.en_passant_square = None
         self.halfmove_clock = 0
         self.fullmove_number = 1
 
-    def copy(self):
+    def copy(self) -> Board:
+        """Create a deep copy of the board.
+
+        Returns:
+            Board: A new independent copy of the board instance
+        """
         new = Board.__new__(Board)
 
+        # Copy mutable data structures
         new.bitboards = [row.copy() for row in self.bitboards]
         new.occupancy = self.occupancy.copy()
         new.all_occupancy = self.all_occupancy
         new.mailbox = self.mailbox.copy()
 
+        # Copy primitive attributes
         new.side_to_move = self.side_to_move
         new.castling_rights = self.castling_rights
         new.en_passant_square = self.en_passant_square
         new.halfmove_clock = self.halfmove_clock
         new.fullmove_number = self.fullmove_number
 
+        # State stack is not copied (fresh undo stack)
         new._state_stack = []
 
         return new
 
     def get_piece_at(self, square: int) -> MailboxCell:
-        """Return mailbox cell at `square`."""
+        """Return mailbox cell at `square`.
+
+        Args:
+            square: Board square index (0-63)
+
+        Returns:
+            Optional tuple of (Color, PieceType) if square occupied, None otherwise
+        """
         return self.mailbox[square]
 
     def set_piece_at(self, square: int, color: Color, piece: PieceType) -> None:
         """Place a piece on `square`. Raises assertion if square already occupied.
 
         Complexity: O(1)
+
+        Args:
+            square: Target square index (0-63)
+            color: Piece color
+            piece: Piece type
+
+        Raises:
+            AssertionError: If square is already occupied
         """
         bit = SQUARE_BB[square]  # PERF: local lookup
         assert (self.all_occupancy & bit) == 0, "Square already occupied"
@@ -172,6 +215,9 @@ class Board:
         """Remove any piece at `square`. No-op if square empty.
 
         Complexity: O(1) average.
+
+        Args:
+            square: Square index to clear (0-63)
         """
         cell = self.mailbox[square]
         if cell is None:
@@ -194,6 +240,13 @@ class Board:
         """Move piece from `from_sq` to `to_sq`. Handles capturing automatically.
 
         Complexity: O(1)
+
+        Args:
+            from_sq: Source square index (0-63)
+            to_sq: Destination square index (0-63)
+
+        Raises:
+            AssertionError: If no piece at source square
         """
         if from_sq == to_sq:
             return
@@ -207,23 +260,24 @@ class Board:
         ci = int(color)
         pi = int(piece)
 
-        # capture if necessary
+        # Capture if necessary
         if self.mailbox[to_sq] is not None:
             # PERF: reuse remove_piece_at (very fast) to keep correctness centralized
             self.remove_piece_at(to_sq)
 
-        # move bitboards — explicit clear/set to avoid XOR ambiguidade.
+        # Move bitboards — explicit clear/set to avoid XOR ambiguities
         self.bitboards[ci][pi] &= ~src_bit
         self.bitboards[ci][pi] |= dst_bit
 
-        # move occupancy
+        # Move occupancy
         self.occupancy[ci] &= ~src_bit
         self.occupancy[ci] |= dst_bit
 
-        # move mailbox
+        # Move mailbox
         self.mailbox[from_sq] = None
         self.mailbox[to_sq] = (color, piece)
-        # update global occupancy
+
+        # Update global occupancy
         self.all_occupancy = self.occupancy[0] | self.occupancy[1]
 
         self._validate_local(color)
@@ -235,17 +289,22 @@ class Board:
         """Validate local invariants related to `color`.
 
         Complexity: O(#pieces + 64) worst-case; optimized with local variables.
+
+        Args:
+            color: Color to validate invariants for
+
+        Raises:
+            AssertionError: If any board invariant is violated
         """
         ci = int(color)
 
-        # color overlap
+        # Color overlap check
         assert (self.occupancy[0] & self.occupancy[1]) == 0
 
-        # global occupancy
+        # Global occupancy consistency
         assert self.all_occupancy == (self.occupancy[0] | self.occupancy[1])
 
-        # mailbox consistency (only check recently affected squares)
-        occ = self.occupancy[ci]
+        # Mailbox consistency (only check recently affected squares)
         bb_rows = self.bitboards
         mailbox = self.mailbox
         all_occ = self.all_occupancy
@@ -261,22 +320,22 @@ class Board:
             assert bb_rows[int(c)][int(p)] & SQUARE_BB[sq], "Bitboard/mailbox inconsistency"
             occ_mask &= occ_mask - 1
 
-        # Validate that mailbox entries for empty squares are None.
-        # PERF: use bitwise complement check instead of per-square loop.
-        # Build mask of mailbox-claimed squares
+        # Validate that mailbox entries for empty squares are None
         mailbox_mask = 0
         for i, cell in enumerate(mailbox):
             if cell is not None:
                 mailbox_mask |= SQUARE_BB[i]
-        # mailbox_mask must equal all_occupancy
         assert mailbox_mask == all_occ, "Mailbox claims do not match occupancy"
 
     def validate(self) -> None:
         """Full validation: recompute occupancies and check mailbox consistency.
 
         Complexity: O(PIECE_COUNT * COLOR_COUNT + 64)
+
+        Raises:
+            AssertionError: If any board invariant is violated
         """
-        # recompute occupancy
+        # Recompute occupancy from bitboards
         recomputed_occ = [0, 0]
         for c in range(COLOR_COUNT):
             row = self.bitboards[c]
@@ -291,14 +350,14 @@ class Board:
         assert (self.occupancy[0] & self.occupancy[1]) == 0
         assert self.all_occupancy == (self.occupancy[0] | self.occupancy[1])
 
-        # mailbox full check
+        # Mailbox full check
         mailbox = self.mailbox
         all_occ = self.all_occupancy
+        bb_rows = self.bitboards
 
         # PERF: validate occupied squares by iterating set bits (pieces count usually << 64)
         occ_mask = all_occ
         seen_mask = 0
-        bb_rows = self.bitboards
         while occ_mask:
             lsb = occ_mask & -occ_mask
             sq = lsb.bit_length() - 1
@@ -314,12 +373,11 @@ class Board:
             # Empty squares mask
             empty_mask = (~seen_mask) & ((1 << 64) - 1)
             # PERF: iterate empties by checking mailbox entries for nones
-            # (rarely faster to check all 64 entries due to branch predictability)
             for sq in range(64):
                 if empty_mask & SQUARE_BB[sq]:
                     assert mailbox[sq] is None
 
-        # king invariants
+        # King invariants - exactly one king per color
         king_index = int(PieceType.KING)
         for c in Color:
             king_bb = self.bitboards[int(c)][king_index]
@@ -340,42 +398,52 @@ class Board:
             for sq in squares:
                 self.set_piece_at(sq, color, piece)
 
-        W = Color.WHITE
-        B = Color.BLACK
+        W, B = Color.WHITE, Color.BLACK
 
-        # White
-        place(W, PieceType.ROOK,   [0, 7])
+        # White pieces
+        place(W, PieceType.ROOK, [0, 7])
         place(W, PieceType.KNIGHT, [1, 6])
         place(W, PieceType.BISHOP, [2, 5])
-        place(W, PieceType.QUEEN,  [3])
-        place(W, PieceType.KING,   [4])
-        place(W, PieceType.PAWN,   list(range(8, 16)))
+        place(W, PieceType.QUEEN, [3])
+        place(W, PieceType.KING, [4])
+        place(W, PieceType.PAWN, list(range(8, 16)))
 
-        # Black
-        place(B, PieceType.ROOK,   [56, 63])
+        # Black pieces
+        place(B, PieceType.ROOK, [56, 63])
         place(B, PieceType.KNIGHT, [57, 62])
         place(B, PieceType.BISHOP, [58, 61])
-        place(B, PieceType.QUEEN,  [59])
-        place(B, PieceType.KING,   [60])
-        place(B, PieceType.PAWN,   list(range(48, 56)))
+        place(B, PieceType.QUEEN, [59])
+        place(B, PieceType.KING, [60])
+        place(B, PieceType.PAWN, list(range(48, 56)))
 
         self.all_occupancy = self.occupancy[0] | self.occupancy[1]
         self.side_to_move = Color.WHITE
         self.validate()
 
     def set_startpos(self) -> None:
+        """Set standard starting position and white to move."""
         self._set_starting_position()
         self.side_to_move = Color.WHITE
 
     def place(self, piece: PieceType, color: Color, square: str) -> None:
+        """Convenience method to place piece using algebraic notation.
+
+        Args:
+            piece: Piece type to place
+            color: Piece color
+            square: Algebraic notation (e.g., 'e4')
+        """
         sqi = square_index(square)
         self.set_piece_at(sqi, color, piece)
 
     @property
-    def pieces(self):
+    def pieces(self) -> dict:
         """
         Adapter para compatibilidade com movegen legado.
         NÃO é fonte da verdade. Apenas reflete self.bitboards.
+
+        Returns:
+            Dictionary mapping colors to piece bitboards
         """
         return {
             Color.WHITE: {
@@ -404,6 +472,13 @@ class Board:
 
         This is computed by generating the pawn attack mask landing on `sq` and
         intersecting with actual pawn bitboard of `by_color`.
+
+        Args:
+            sq: Target square index
+            by_color: Attacking color
+
+        Returns:
+            bool: True if square is attacked by pawn of specified color
         """
         bb = SQUARE_BB[sq]
         if by_color == Color.WHITE:
@@ -415,9 +490,16 @@ class Board:
         return bool(self.bitboards[int(by_color)][int(PieceType.PAWN)] & attackers)
 
     def _is_square_attacked(self, sq: int, by_color: Color) -> bool:
-        occ = self.all_occupancy
-        target = SQUARE_BB[sq]
+        """Check if square is attacked by any piece of specified color.
 
+        Args:
+            sq: Target square index
+            by_color: Attacking color
+
+        Returns:
+            bool: True if square is attacked by specified color
+        """
+        occ = self.all_occupancy
         ci = int(by_color)
 
         # 1. Pawn attacks
@@ -431,25 +513,33 @@ class Board:
             return True
 
         # 3. Bishop + Queen diagonals
-        diag_attackers = self.bitboards[ci][int(PieceType.BISHOP)] | self.bitboards[ci][int(PieceType.QUEEN)]
-        if diag_attackers:
-            if bishop_attacks(sq, occ) & diag_attackers:
-                return True
+        diag_attackers = (self.bitboards[ci][int(PieceType.BISHOP)] |
+                          self.bitboards[ci][int(PieceType.QUEEN)])
+        if diag_attackers and bishop_attacks(sq, occ) & diag_attackers:
+            return True
 
         # 4. Rook + Queen files/ranks
-        straight_attackers = self.bitboards[ci][int(PieceType.ROOK)] | self.bitboards[ci][int(PieceType.QUEEN)]
-        if straight_attackers:
-            if rook_attacks(sq, occ) & straight_attackers:
-                return True
+        straight_attackers = (self.bitboards[ci][int(PieceType.ROOK)] |
+                              self.bitboards[ci][int(PieceType.QUEEN)])
+        if straight_attackers and rook_attacks(sq, occ) & straight_attackers:
+            return True
 
         # 5. King adjacency
         king = self.bitboards[ci][int(PieceType.KING)]
-        if king and king_attacks(sq) & king:
+        if king and (king_attacks((king & -king).bit_length() - 1) & (1 << sq)):
             return True
 
         return False
 
     def is_in_check(self, color: Color) -> bool:
+        """Check if king of specified color is in check.
+
+        Args:
+            color: Color to check for king safety
+
+        Returns:
+            bool: True if king is in check
+        """
         enemy = Color.BLACK if color == Color.WHITE else Color.WHITE
 
         king_bb = self.bitboards[int(color)][int(PieceType.KING)]
@@ -459,22 +549,24 @@ class Board:
         king_sq = (king_bb & -king_bb).bit_length() - 1
         return self._is_square_attacked(king_sq, enemy)
 
-    from utils.constants import (
-        CASTLE_WHITE_K,
-        CASTLE_WHITE_Q,
-        CASTLE_BLACK_K,
-        CASTLE_BLACK_Q,
-    )
-
-    def make_move(self, move):
+    def make_move(self, move: Move) -> None:
         """
         Aplica um movimento completo:
         - atualização consistente de bitboards, mailbox, occupancies
         - roque, promoção, en-passant corretos
         - castling rights corrigidos
-        """
 
+        Args:
+            move: Move object containing move information
+        """
         self._push_state()
+        old_castling = self.castling_rights
+        old_ep = self.en_passant_square
+
+        # remover estado antigo do hash
+        self.zobrist_key = Zobrist.xor_castling(self.zobrist_key, old_castling)
+        if old_ep is not None:
+            self.zobrist_key = Zobrist.xor_enpassant(self.zobrist_key, old_ep)
 
         stm = self.side_to_move
         enemy = Color.BLACK if stm == Color.WHITE else Color.WHITE
@@ -489,65 +581,94 @@ class Board:
         # ====================================================
         # CAPTURA (normal ou en-passant)
         # ====================================================
-
-        if piece == PieceType.PAWN and move.is_capture and old_ep is not None and to_sq == old_ep:
+        if (piece == PieceType.PAWN and move.is_capture and
+                old_ep is not None and to_sq == old_ep):
+            # En passant capture
             cap_sq = to_sq - 8 if stm == Color.WHITE else to_sq + 8
             self._clear_square(cap_sq)
-
+            cap_index = int(enemy) * 6 + int(PieceType.PAWN)
+            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, cap_index, cap_sq)
         elif move.is_capture:
+            # Normal capture
+            captured = self.mailbox[to_sq]  # <-- vem do board, não do Move
+
+            if captured is not None:
+                cap_color, cap_piece = captured
+                cap_index = int(cap_color) * 6 + int(cap_piece)
+
+                # remove a peça capturada do hash
+                self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, cap_index, to_sq)
+
             self._clear_square(to_sq)
 
         # ====================================================
         # MOVIMENTO PRINCIPAL
         # ====================================================
-
         self._clear_square(from_sq)
         self._place_piece(stm, piece, to_sq)
+        piece_index = int(stm) * 6 + int(piece)
+
+        # remove peça da origem
+        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, piece_index, from_sq)
+        # adiciona peça no destino
+        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, piece_index, to_sq)
 
         # ====================================================
-        # ROQUE
+        # ROQUE (com atualização Zobrist)
         # ====================================================
-
         if piece == PieceType.KING and abs(to_sq - from_sq) == 2:
 
+            rook_index = int(stm) * 6 + int(PieceType.ROOK)
+
             if stm == Color.WHITE:
-                # O-O
+                # O-O  (e1 -> g1)
                 if to_sq == 6:
-                    self._clear_square(7)
-                    self._place_piece(stm, PieceType.ROOK, 5)
-                # O-O-O
+                    rook_from, rook_to = 7, 5  # h1 -> f1
+
+                # O-O-O (e1 -> c1)
                 elif to_sq == 2:
-                    self._clear_square(0)
-                    self._place_piece(stm, PieceType.ROOK, 3)
+                    rook_from, rook_to = 0, 3  # a1 -> d1
 
             else:
-                # O-O
+                # O-O (e8 -> g8)
                 if to_sq == 62:
-                    self._clear_square(63)
-                    self._place_piece(stm, PieceType.ROOK, 61)
-                # O-O-O
+                    rook_from, rook_to = 63, 61  # h8 -> f8
+
+                # O-O-O (e8 -> c8)
                 elif to_sq == 58:
-                    self._clear_square(56)
-                    self._place_piece(stm, PieceType.ROOK, 59)
+                    rook_from, rook_to = 56, 59  # a8 -> d8
+
+            # remove torre da origem
+            self._clear_square(rook_from)
+            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, rook_index, rook_from)
+
+            # coloca torre no destino
+            self._place_piece(stm, PieceType.ROOK, rook_to)
+            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, rook_index, rook_to)
 
         # ====================================================
         # PROMOÇÃO
         # ====================================================
-
         if piece == PieceType.PAWN and move.promotion is not None:
             self._clear_square(to_sq)
             self._place_piece(stm, move.promotion, to_sq)
+            pawn_index = int(stm) * 6 + int(PieceType.PAWN)
+            promo_index = int(stm) * 6 + int(move.promotion)
+
+            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, pawn_index, to_sq)
+            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, promo_index, to_sq)
 
         # ====================================================
         # CASTLING RIGHTS
         # ====================================================
-
+        # King move removes castling rights
         if piece == PieceType.KING:
             if stm == Color.WHITE:
                 self.castling_rights &= ~(CASTLE_WHITE_K | CASTLE_WHITE_Q)
             else:
                 self.castling_rights &= ~(CASTLE_BLACK_K | CASTLE_BLACK_Q)
 
+        # Rook move removes corresponding castling right
         if piece == PieceType.ROOK:
             if stm == Color.WHITE:
                 if from_sq == 0:
@@ -560,6 +681,7 @@ class Board:
                 elif from_sq == 63:
                     self.castling_rights &= ~CASTLE_BLACK_K
 
+        # Capture on rook square removes corresponding castling right
         if move.is_capture:
             if to_sq == 0:
                 self.castling_rights &= ~CASTLE_WHITE_Q
@@ -573,33 +695,31 @@ class Board:
         # ====================================================
         # EN PASSANT (novo)
         # ====================================================
-
         if piece == PieceType.PAWN and abs(to_sq - from_sq) == 16:
             self.en_passant_square = (from_sq + to_sq) // 2
 
         # ====================================================
         # ATUALIZAR OCCUPANCY
         # ====================================================
-
-        self.occupancy[0] = (
-                self.bitboards[0][0] | self.bitboards[0][1] | self.bitboards[0][2]
-                | self.bitboards[0][3] | self.bitboards[0][4] | self.bitboards[0][5]
-        )
-
-        self.occupancy[1] = (
-                self.bitboards[1][0] | self.bitboards[1][1] | self.bitboards[1][2]
-                | self.bitboards[1][3] | self.bitboards[1][4] | self.bitboards[1][5]
-        )
-
-        self.all_occupancy = self.occupancy[0] | self.occupancy[1]
+        self._update_occupancy()
 
         # ====================================================
         # TROCA DE LADO
         # ====================================================
-
         self.side_to_move = enemy
 
-    def unmake_move(self):
+        # aplicar novo castling
+        self.zobrist_key = Zobrist.xor_castling(self.zobrist_key, self.castling_rights)
+
+        # aplicar novo en passant
+        if self.en_passant_square is not None:
+            self.zobrist_key = Zobrist.xor_enpassant(self.zobrist_key, self.en_passant_square)
+
+        # alternar lado
+        self.zobrist_key = Zobrist.xor_side(self.zobrist_key)
+
+    def unmake_move(self) -> None:
+        """Restore board state to before last move."""
         self._pop_state()
 
     def _push_state(self) -> None:
@@ -607,79 +727,73 @@ class Board:
         Save full snapshot of mutable board state required to unmake moves.
         Snapshot order is deliberate and must match _pop_state exactly.
         """
-        # copy bitboards: two lists (one per color) of piece bitboards
+        # Copy bitboards: two lists (one per color) of piece bitboards
         bitboards_copy = [list(self.bitboards[0]), list(self.bitboards[1])]
 
-        # mailbox is list of tuples or None; list() makes a shallow copy (tuples immutable)
+        # Mailbox is list of tuples or None; list() makes a shallow copy (tuples immutable)
         mailbox_copy = list(self.mailbox)
 
-        # occupancy per color (ints)
+        # Occupancy per color (ints)
         occupancy_copy = [int(self.occupancy[0]), int(self.occupancy[1])]
 
-        # global occupancy
+        # Global occupancy
         all_occ_copy = int(self.all_occupancy)
 
-        # primitives
+        # Primitives
         castling_copy = int(self.castling_rights)
         enpass_copy = None if self.en_passant_square is None else int(self.en_passant_square)
         halfmove_copy = int(self.halfmove_clock)
         fullmove_copy = int(self.fullmove_number)
         side_copy = self.side_to_move
 
-        # ensure stack exists
-        if not hasattr(self, "_state_stack"):
-            self._state_stack = []
+        # Segurança extra em _push_state()
+        if not hasattr(self, "zobrist_key"):
+            from core.hash.zobrist import Zobrist
+            Zobrist.ensure_initialized()
+            self.zobrist_key = self.compute_zobrist()
 
-        # push tuple in this exact order (must match _pop_state)
+        # Push tuple in this exact order (must match _pop_state)
         self._state_stack.append((
-            bitboards_copy,
-            mailbox_copy,
-            occupancy_copy,
-            all_occ_copy,
-            castling_copy,
-            enpass_copy,
-            halfmove_copy,
-            fullmove_copy,
-            side_copy,
+            bitboards_copy, mailbox_copy, occupancy_copy, all_occ_copy,
+            castling_copy, enpass_copy, halfmove_copy, fullmove_copy, side_copy,
+            self.zobrist_key,
         ))
 
     def _pop_state(self) -> None:
         """
         Restore snapshot saved by _push_state. Must match the push order exactly.
+
+        Raises:
+            RuntimeError: If no state to pop
         """
-        if not hasattr(self, "_state_stack") or not self._state_stack:
+        if not self._state_stack:
             raise RuntimeError("No state to pop")
 
         (
-            bitboards_copy,
-            mailbox_copy,
-            occupancy_copy,
-            all_occ_copy,
-            castling_copy,
-            enpass_copy,
-            halfmove_copy,
-            fullmove_copy,
-            side_copy,
+            bitboards_copy, mailbox_copy, occupancy_copy, all_occ_copy,
+            castling_copy, enpass_copy, halfmove_copy, fullmove_copy, side_copy,
+            zobrist_copy,
         ) = self._state_stack.pop()
+        self.zobrist_key = zobrist_copy
 
-        # restore bitboards (ensure lists-of-lists shape)
+        # Restore bitboards (ensure lists-of-lists shape)
         self.bitboards = [list(bitboards_copy[0]), list(bitboards_copy[1])]
 
-        # mailbox
+        # Mailbox
         self.mailbox = list(mailbox_copy)
 
-        # occupancy / all_occupancy
+        # Occupancy / all_occupancy
         self.occupancy = [int(occupancy_copy[0]), int(occupancy_copy[1])]
         self.all_occupancy = int(all_occ_copy)
 
-        # other primitives
+        # Other primitives
         self.castling_rights = int(castling_copy)
         self.en_passant_square = None if enpass_copy is None else int(enpass_copy)
         self.halfmove_clock = int(halfmove_copy)
         self.fullmove_number = int(fullmove_copy)
         self.side_to_move = side_copy
 
-        # final sanity check: union of piece bitboards must equal all_occupancy
+        # Final sanity check: union of piece bitboards must equal all_occupancy
         bb_union = 0
         for c in (0, 1):
             for p in range(len(self.bitboards[c])):
@@ -687,6 +801,15 @@ class Board:
         assert self.all_occupancy == bb_union, "all_occupancy mismatch after pop_state"
 
     def _pawn_attacks_from(self, pawns_bb: int, color: Color) -> int:
+        """Calculate pawn attacks from given pawn bitboard.
+
+        Args:
+            pawns_bb: Bitboard of pawns
+            color: Color of pawns
+
+        Returns:
+            int: Bitboard of squares attacked by these pawns
+        """
         if pawns_bb == 0:
             return 0
 
@@ -699,8 +822,19 @@ class Board:
 
         return left | right
 
+    # ------------------------------------------------------------
+    # FEN operations
+    # ------------------------------------------------------------
     @classmethod
-    def from_fen(cls, fen: str) -> "Board":
+    def from_fen(cls, fen: str) -> Board:
+        """Create board from FEN string.
+
+        Args:
+            fen: FEN string representation
+
+        Returns:
+            Board: New board instance with position from FEN
+        """
         board = cls(setup=False)
         board.set_fen(fen)
         return board
@@ -709,6 +843,12 @@ class Board:
         """
         Load a position from a FEN string.
         Minimal implementation for perft validation.
+
+        Args:
+            fen: FEN string representation
+
+        Raises:
+            ValueError: If FEN string is invalid
         """
         self.clear()
 
@@ -718,6 +858,7 @@ class Board:
 
         placement, side, castling, en_passant = parts[0], parts[1], parts[2], parts[3]
 
+        # Parse piece placement
         rank = 7
         file = 0
 
@@ -733,12 +874,8 @@ class Board:
 
             color = Color.WHITE if ch.isupper() else Color.BLACK
             piece = {
-                "p": PieceType.PAWN,
-                "n": PieceType.KNIGHT,
-                "b": PieceType.BISHOP,
-                "r": PieceType.ROOK,
-                "q": PieceType.QUEEN,
-                "k": PieceType.KING,
+                "p": PieceType.PAWN, "n": PieceType.KNIGHT, "b": PieceType.BISHOP,
+                "r": PieceType.ROOK, "q": PieceType.QUEEN, "k": PieceType.KING,
             }[ch.lower()]
 
             square = rank * 8 + file
@@ -770,17 +907,9 @@ class Board:
             self.en_passant_square = rank * 8 + file
 
         # Recalculate occupancy
-        self.occupancy[0] = 0
-        self.occupancy[1] = 0
+        self._update_occupancy()
 
-        for color in (Color.WHITE, Color.BLACK):
-            for bb in self.bitboards[int(color)]:
-                self.occupancy[int(color)] |= bb
-
-        self.all_occupancy = self.occupancy[0] | self.occupancy[1]
-
-        self.validate()
-
+        # Optional FEN fields
         if len(parts) >= 5:
             self.halfmove_clock = int(parts[4])
         else:
@@ -791,31 +920,16 @@ class Board:
         else:
             self.fullmove_number = 1
 
-    def _clear_square(self, sq):
-        """Remove qualquer peça do square, atualizando bitboards e mailbox."""
-        piece = self.mailbox[sq]
-        if piece is None:
-            return
-
-        color, ptype = piece
-
-        self.mailbox[sq] = None
-        self.bitboards[int(color)][int(ptype)] ^= (1 << sq)
-
-        self.occupancy[int(color)] ^= (1 << sq)
-        self.all_occupancy ^= (1 << sq)
-
-    def _place_piece(self, color, ptype, sq):
-        """Coloca uma peça no square, atualizando bitboards e mailbox."""
-        self.mailbox[sq] = (color, ptype)
-
-        self.bitboards[int(color)][int(ptype)] |= (1 << sq)
-        self.occupancy[int(color)] |= (1 << sq)
-        self.all_occupancy |= (1 << sq)
+        self.validate()
+        Zobrist.ensure_initialized()
+        self.zobrist_key = self.compute_zobrist()
 
     def to_fen(self) -> str:
         """
         Serializa o tabuleiro atual em FEN.
+
+        Returns:
+            str: FEN string representation of current position
         """
         pieces = {
             (Color.WHITE, PieceType.PAWN): "P",
@@ -860,10 +974,10 @@ class Board:
 
         board_part = "/".join(rows)
 
-        # side to move
+        # Side to move
         side = "w" if self.side_to_move == Color.WHITE else "b"
 
-        # castling
+        # Castling
         castling = ""
         if self.castling_rights & CASTLE_WHITE_K:
             castling += "K"
@@ -876,7 +990,7 @@ class Board:
         if castling == "":
             castling = "-"
 
-        # en passant
+        # En passant
         if self.en_passant_square is None:
             ep = "-"
         else:
@@ -886,6 +1000,114 @@ class Board:
 
         return f"{board_part} {side} {castling} {ep} {self.halfmove_clock} {self.fullmove_number}"
 
+    # ------------------------------------------------------------
+    # Internal helper methods
+    # ------------------------------------------------------------
+    def _clear_square(self, sq: int) -> None:
+        """Remove qualquer peça do square, atualizando bitboards e mailbox.
+
+        Args:
+            sq: Square index to clear
+        """
+        piece = self.mailbox[sq]
+        if piece is None:
+            return
+
+        color, ptype = piece
+
+        self.mailbox[sq] = None
+        self.bitboards[int(color)][int(ptype)] ^= (1 << sq)
+
+        self.occupancy[int(color)] ^= (1 << sq)
+        self.all_occupancy ^= (1 << sq)
+
+    def _place_piece(self, color: Color, ptype: PieceType, sq: int) -> None:
+        """Coloca uma peça no square, atualizando bitboards e mailbox.
+
+        Args:
+            color: Piece color
+            ptype: Piece type
+            sq: Target square index
+        """
+        self.mailbox[sq] = (color, ptype)
+
+        self.bitboards[int(color)][int(ptype)] |= (1 << sq)
+        self.occupancy[int(color)] |= (1 << sq)
+        self.all_occupancy |= (1 << sq)
+
+    def _update_occupancy(self) -> None:
+        """Recalculate occupancy bitboards from piece bitboards."""
+        self.occupancy[0] = (
+                self.bitboards[0][0] | self.bitboards[0][1] | self.bitboards[0][2] |
+                self.bitboards[0][3] | self.bitboards[0][4] | self.bitboards[0][5]
+        )
+
+        self.occupancy[1] = (
+                self.bitboards[1][0] | self.bitboards[1][1] | self.bitboards[1][2] |
+                self.bitboards[1][3] | self.bitboards[1][4] | self.bitboards[1][5]
+        )
+
+        self.all_occupancy = self.occupancy[0] | self.occupancy[1]
+
 
 def make_board(fen: str) -> Board:
+    """Factory function to create board from FEN string.
+
+    Args:
+        fen: FEN string representation
+
+    Returns:
+        Board: New board instance with position from FEN
+    """
     return Board.from_fen(fen)
+
+
+# =============================================================================
+# SUGESTÕES DE OTIMIZAÇÃO DE PERFORMANCE
+# =============================================================================
+"""
+OTIMIZAÇÕES SUGERIDAS:
+
+1. CACHE DE ATAQUES:
+   - Implementar cache para bishop_attacks() e rook_attacks() usando occupation
+     como chave, reduzindo recálculos em posições repetidas
+
+2. BITBOARD OPERATIONS:
+   - Usar operações bitwise nativas do Python (|, &, ~, ^) em vez de loops
+   - Considerar usar array.array('Q') ou numpy para operações em lote
+
+3. VALIDAÇÃO CONDICIONAL:
+   - Adicionar flag debug para desabilitar validação em produção
+   - Validar apenas quando DEBUG=True ou em testes
+
+4. MEMORY VIEWS:
+   - Usar memoryview para acesso mais rápido aos arrays de bitboards
+   - Considerar struct.unpack para conversões bitboard
+
+5. LAZY OCCUPANCY CALC:
+   - Calcular all_occupancy apenas quando necessário, não em cada movimento
+   - Manter dirty flag para indicar quando recalcular
+
+6. INLINE FUNCTIONS:
+   - Usar @staticmethod ou @classmethod para funções auxiliares
+   - Considerar functools.lru_cache para funções puras
+
+7. MOVE STACK OPTIMIZATION:
+   - Usar collections.deque para _state_stack se muitos níveis de undo
+   - Implementar delta encoding para estados (armazenar apenas mudanças)
+
+8. TYPE SPECIALIZATION:
+   - Usar ctypes.c_uint64 para bitboards se compatibilidade permitir
+   - Considerar __slots__ para todas as classes para reduzir overhead
+
+9. HOT PATH OPTIMIZATIONS:
+   - Inline _sq_bit() em hot paths (set_piece_at, remove_piece_at)
+   - Pré-computar máscaras comuns (ex: pawn_attack_table[color][square])
+
+10. MEMORY LAYOUT:
+    - Reorganizar bitboards para [piece][color] se acesso por peça for mais comum
+    - Considerar Array of Structs vs Struct of Arrays baseado nos padrões de acesso
+
+NOTA: Estas são apenas sugestões. Medir performance antes e depois de cada
+otimização para validar benefícios em cenários reais.
+"""
