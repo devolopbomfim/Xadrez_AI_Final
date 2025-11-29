@@ -7,9 +7,8 @@ from core.moves.tables.attack_tables import knight_attacks, king_attacks
 from core.moves.magic.magic_bitboards import rook_attacks, bishop_attacks
 from utils.enums import Color, PieceType
 from core.moves.move import Move
-from utils.constants import (
-    CASTLE_WHITE_K, CASTLE_WHITE_Q, CASTLE_BLACK_K, CASTLE_BLACK_Q
-)
+from core.moves.castling import _gen_castling_moves
+
 
 
 # -------------------------
@@ -21,7 +20,6 @@ def _iter_bits(bb: int) -> Iterable[int]:
         lsb = bb & -bb
         yield lsb.bit_length() - 1
         bb ^= lsb
-
 
 def _bb_to_moves(board, from_sq: int, target_bb: int, piece: PieceType, occ_enemy: int) -> List[Move]:
     """Convert target bitboard into Move objects for a given from_sq / piece."""
@@ -36,7 +34,6 @@ def _bb_to_moves(board, from_sq: int, target_bb: int, piece: PieceType, occ_enem
             is_capture=is_capture
         ))
     return moves
-
 
 # -------------------------
 # Generators
@@ -100,7 +97,6 @@ def _gen_pawn_moves(board, stm: Color, occ_all: int, occ_enemy: int) -> List[Mov
 
     return moves
 
-
 def _gen_knight_moves(board, stm: Color, occ_own: int, occ_enemy: int) -> List[Move]:
     moves: List[Move] = []
     knights = board.bitboards[int(stm)][int(PieceType.KNIGHT)]
@@ -109,7 +105,6 @@ def _gen_knight_moves(board, stm: Color, occ_own: int, occ_enemy: int) -> List[M
         attacks = knight_attacks(from_sq) & ~occ_own
         moves.extend(_bb_to_moves(board, from_sq, attacks, PieceType.KNIGHT, occ_enemy))
     return moves
-
 
 def _gen_slider_moves(board, stm: Color, occ_all: int, occ_own: int, occ_enemy: int) -> List[Move]:
     moves: List[Move] = []
@@ -137,7 +132,6 @@ def _gen_slider_moves(board, stm: Color, occ_all: int, occ_own: int, occ_enemy: 
 
     return moves
 
-
 def _gen_king_moves(board, stm: Color, occ_own: int, occ_enemy: int) -> List[Move]:
     moves: List[Move] = []
     king_bb = board.bitboards[int(stm)][int(PieceType.KING)]
@@ -147,50 +141,10 @@ def _gen_king_moves(board, stm: Color, occ_own: int, occ_enemy: int) -> List[Mov
         moves.extend(_bb_to_moves(board, from_sq, attacks, PieceType.KING, occ_enemy))
     return moves
 
-
-def _gen_castling_moves(board) -> List[Move]:
-    """
-    Castling generation kept separate for clarity.
-    Returns list of Move objects representing king moves for castling.
-    """
-    moves: List[Move] = []
-    stm = board.side_to_move
-    enemy = Color.BLACK if stm == Color.WHITE else Color.WHITE
-
-    king_bb = board.bitboards[int(stm)][int(PieceType.KING)]
-    if not king_bb:
-        return moves
-
-    # use explicit squares as in original implementation
-    if stm == Color.WHITE:
-        # king-side
-        if board.castling_rights & CASTLE_WHITE_K:
-            if not (board.all_occupancy & (SQUARE_BB[5] | SQUARE_BB[6])):
-                if not board._is_square_attacked(4, enemy) and not board._is_square_attacked(5, enemy) and not board._is_square_attacked(6, enemy):
-                    moves.append(Move(4, 6, PieceType.KING))
-        # queen-side
-        if board.castling_rights & CASTLE_WHITE_Q:
-            if not (board.all_occupancy & (SQUARE_BB[1] | SQUARE_BB[2] | SQUARE_BB[3])):
-                if not board._is_square_attacked(4, enemy) and not board._is_square_attacked(3, enemy) and not board._is_square_attacked(2, enemy):
-                    moves.append(Move(4, 2, PieceType.KING))
-    else:
-        # black king-side
-        if board.castling_rights & CASTLE_BLACK_K:
-            if not (board.all_occupancy & (SQUARE_BB[61] | SQUARE_BB[62])):
-                if not board._is_square_attacked(60, enemy) and not board._is_square_attacked(61, enemy) and not board._is_square_attacked(62, enemy):
-                    moves.append(Move(60, 62, PieceType.KING))
-        # black queen-side
-        if board.castling_rights & CASTLE_BLACK_Q:
-            if not (board.all_occupancy & (SQUARE_BB[57] | SQUARE_BB[58] | SQUARE_BB[59])):
-                if not board._is_square_attacked(60, enemy) and not board._is_square_attacked(59, enemy) and not board._is_square_attacked(58, enemy):
-                    moves.append(Move(60, 58, PieceType.KING))
-
-    return moves
-
-
 # -------------------------
 # Public pipeline
 # -------------------------
+
 def generate_pseudo_legal_moves(board) -> List[Move]:
     """
     Main entry: returns list[Move] of all pseudo-legal moves (excluding castling here).
