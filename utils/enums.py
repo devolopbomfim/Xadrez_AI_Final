@@ -1,27 +1,25 @@
-# utils/enums.py
 """
 Enums fundamentais do Xadrez_AI_Final.
 
-Objetivo:
-    Definir enums primários usados por todo o projeto (cores, tipos de peças,
-    tipos de movimento e resultado do jogo) mantendo compatibilidade binária
-    (IntEnum) e a indexação A1=0 .. H8=63.
+Invariantes:
+    - A1 = 0 .. H8 = 63 (coerente com todo o projeto)
+    - Valores numéricos dos enums são parte da ABI interna e NÃO devem mudar
+    - PieceIndex = índice 0..11 (6 peças * 2 cores), usado por bitboards
 
-Invariantes importantes:
-    - Indexação do tabuleiro A1=0 .. H8=63 é mantida por todo o projeto.
-    - Valores numéricos dos enums são ABI interna e NÃO devem ser alterados.
-    - PieceIndex é um alias semântico para índices 0..11 (bitboards).
+Objetivo:
+    Manter enums pequenos, claros e estáveis. Eles são usados em todo o motor
+    e servem como base para movegen, board, zobrist e perft.
 """
 
 from __future__ import annotations
-
 from enum import IntEnum
 from typing import TypeAlias, Tuple
 
-# ---------------------------------------------------------------------
-# Semantic, aliás (contrato semântico, não é wrapper)
-# ---------------------------------------------------------------------
-PieceIndex: TypeAlias = int
+# ---------------------------------------------------------
+# Tipos semânticos
+# ---------------------------------------------------------
+
+PieceIndex: TypeAlias = int   # usado em bitboards e arrays indexados
 
 __all__ = [
     "Color",
@@ -32,25 +30,23 @@ __all__ = [
     "piece_index",
 ]
 
-# ---------------------------------------------------------------------
-# Base offsets para cálculo de peça por cor
-# ---------------------------------------------------------------------
-# WHITE -> 0
-# BLACK -> 6
+# ---------------------------------------------------------
+# Bases internas fixas para peça+cor → índice
+# WHITE = 0..5   BLACK = 6..11
+# ---------------------------------------------------------
+
 _PIECE_INDEX_BASE: Tuple[int, int] = (0, 6)
 
 
-# ---------------------------------------------------------------------
-# Color
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
+# Enums principais
+# ---------------------------------------------------------
+
 class Color(IntEnum):
     WHITE = 0
     BLACK = 1
 
 
-# ---------------------------------------------------------------------
-# PieceType
-# ---------------------------------------------------------------------
 class PieceType(IntEnum):
     PAWN   = 0
     KNIGHT = 1
@@ -60,9 +56,6 @@ class PieceType(IntEnum):
     KING   = 5
 
 
-# ---------------------------------------------------------------------
-# MoveType (6 tipos, alinhado com a suíte de testes)
-# ---------------------------------------------------------------------
 class MoveType(IntEnum):
     QUIET      = 0
     CAPTURE    = 1
@@ -72,46 +65,33 @@ class MoveType(IntEnum):
     CASTLE     = 5
 
 
-# ---------------------------------------------------------------------
-# GameResult
-# ---------------------------------------------------------------------
 class GameResult(IntEnum):
-    ONGOING   = 0
-    WHITE_WIN = 1
-    BLACK_WIN = 2
+    ONGOING                     = 0
+    WHITE_WIN                   = 1
+    BLACK_WIN                   = 2
 
-    # Draw reasons
-    DRAW_STALEMATE = 3
-    DRAW_REPETITION = 4
-    DRAW_FIFTY_MOVE = 5
-    DRAW_INSUFFICIENT_MATERIAL = 6
+    DRAW_STALEMATE              = 3
+    DRAW_REPETITION             = 4
+    DRAW_FIFTY_MOVE             = 5
+    DRAW_INSUFFICIENT_MATERIAL  = 6
 
 
-# ---------------------------------------------------------------------
-# Fast mapping: (PieceType, Color) -> PieceIndex
-# ---------------------------------------------------------------------
+# ---------------------------------------------------------
+# Funções utilitárias
+# ---------------------------------------------------------
+
 def piece_index(piece_type: PieceType, color: Color) -> PieceIndex:
     """
-    Mapeia (piece_type, color) -> PieceIndex [0..11].
+    Retorna índice [0..11] para tabelas de bitboards:
 
-    Layout fixo:
-        0..5  = White: [P, N, B, R, Q, K]
-        6..11 = Black: [P, N, B, R, Q, K]
+        White: 0..5   (P, N, B, R, Q, K)
+        Black: 6..11  (P, N, B, R, Q, K)
 
-    Fórmula:
-        idx = _PIECE_INDEX_BASE[color] + piece_type
-
-    Propriedades:
-        - O(1)
-        - Sem branches de controle
-        - Apenas 2 loads + 1 soma
-
-    Validação:
-        Garante tipos corretos para evitar corrupção silenciosa de índice.
+    Esta função é O(1) e alinhada com o layout das tabelas internas.
     """
     if not isinstance(piece_type, PieceType):
-        raise TypeError(f"piece_type inválido: esperado PieceType, recebido {type(piece_type).__name__}")
+        raise TypeError(f"piece_type inválido: {type(piece_type).__name__}")
     if not isinstance(color, Color):
-        raise TypeError(f"color inválido: esperado Color, recebido {type(color).__name__}")
+        raise TypeError(f"color inválido: {type(color).__name__}")
 
     return _PIECE_INDEX_BASE[int(color)] + int(piece_type)

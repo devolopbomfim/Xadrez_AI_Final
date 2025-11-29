@@ -1,0 +1,76 @@
+=== DIAGNOSTICS START ===
+>> test_board_init
+Board occupancy non-zero OK
+Occupancy coherence OK
+>> test_movegen_legal
+Legal moves from startpos: 20
+>> test_movegen_pseudo_vs_legal (sanity)
+pseudo: 20, legal: 20 (ok)
+>> test_make_unmake_hash_invariant
+make/unmake hash invariant OK (sample)
+>> test_zobrist_deterministic
+Zobrist entropy: 1.000000
+>> test_perft(depth=2)
+
+=== PERFT DIVIDE (depth 2) ===
+Move(from_sq=1, to_sq=16, piece=<PieceType.KNIGHT: 1>, is_capture=False, promotion=None): 20
+Move(from_sq=1, to_sq=18, piece=<PieceType.KNIGHT: 1>, is_capture=False, promotion=None): 20
+Move(from_sq=10, to_sq=18, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=10, to_sq=26, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=11, to_sq=19, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=11, to_sq=27, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=12, to_sq=20, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=12, to_sq=28, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=13, to_sq=21, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=13, to_sq=29, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=14, to_sq=22, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=14, to_sq=30, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=15, to_sq=23, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=15, to_sq=31, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=6, to_sq=21, piece=<PieceType.KNIGHT: 1>, is_capture=False, promotion=None): 20
+Move(from_sq=6, to_sq=23, piece=<PieceType.KNIGHT: 1>, is_capture=False, promotion=None): 20
+Move(from_sq=8, to_sq=16, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=8, to_sq=24, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=9, to_sq=17, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+Move(from_sq=9, to_sq=25, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 20
+
+TOTAL: 400
+Perft(2) = 400 nodes in 0.020s
+Perft OK (startpos)
+>> test_perft(depth=3)
+
+=== PERFT DIVIDE (depth 3) ===
+Move(from_sq=1, to_sq=16, piece=<PieceType.KNIGHT: 1>, is_capture=False, promotion=None): 400
+Move(from_sq=1, to_sq=18, piece=<PieceType.KNIGHT: 1>, is_capture=False, promotion=None): 440
+Move(from_sq=10, to_sq=18, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 420
+Move(from_sq=10, to_sq=26, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 441
+Move(from_sq=11, to_sq=19, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 539
+Move(from_sq=11, to_sq=27, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 560
+Move(from_sq=12, to_sq=20, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 599
+Move(from_sq=12, to_sq=28, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 600
+Move(from_sq=13, to_sq=21, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 380
+Move(from_sq=13, to_sq=29, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 401
+Move(from_sq=14, to_sq=22, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 420
+Move(from_sq=14, to_sq=30, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 421
+Move(from_sq=15, to_sq=23, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 380
+Move(from_sq=15, to_sq=31, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 420
+Move(from_sq=6, to_sq=21, piece=<PieceType.KNIGHT: 1>, is_capture=False, promotion=None): 440
+Move(from_sq=6, to_sq=23, piece=<PieceType.KNIGHT: 1>, is_capture=False, promotion=None): 400
+Move(from_sq=8, to_sq=16, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 380
+Move(from_sq=8, to_sq=24, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 420
+Move(from_sq=9, to_sq=17, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 420
+Move(from_sq=9, to_sq=25, piece=<PieceType.PAWN: 0>, is_capture=False, promotion=None): 421
+
+TOTAL: 8902
+Perft(3) = 8902 nodes in 0.392s
+Perft OK (startpos)
+>> test_en_passant_case (edgecase)
+En-passant generation OK
+>> test_castling_case (edgecase)
+Castling generation (at least one side) OK
+
+=== SUMMARY ===
+Elapsed: 0.864s
+Errors: 0
+Warnings: 0
+DIAGNOSTICS: OK
