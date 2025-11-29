@@ -524,6 +524,7 @@ class Board:
 
         return False
 
+
     def is_in_check(self, color: Color) -> bool:
         """Check if king of specified color is in check.
 
