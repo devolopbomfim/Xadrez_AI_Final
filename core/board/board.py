@@ -468,26 +468,19 @@ class Board:
     # Attack / check helpers
     # ------------------------------------------------------------
     def _pawn_attacked(self, sq: int, by_color: Color) -> bool:
-        """Return True if square `sq` is attacked by a pawn of `by_color`.
+        """Return True if square `sq` is attacked by a pawn of `by_color`."""
 
-        This is computed by generating the pawn attack mask landing on `sq` and
-        intersecting with actual pawn bitboard of `by_color`.
+        pawns = self.bitboards[int(by_color)][int(PieceType.PAWN)]
+        target = SQUARE_BB[sq]
 
-        Args:
-            sq: Target square index
-            by_color: Attacking color
-
-        Returns:
-            bool: True if square is attacked by pawn of specified color
-        """
-        bb = SQUARE_BB[sq]
         if by_color == Color.WHITE:
-            # white pawns attack up: from (sq-7) and (sq-9)
-            attackers = ((bb >> 7) & NOT_FILE_A) | ((bb >> 9) & NOT_FILE_H)
+            # white pawns attack upwards: diagonals +7 and +9
+            attacks = ((pawns << 7) & NOT_FILE_H) | ((pawns << 9) & NOT_FILE_A)
         else:
-            # black pawns attack down: from (sq+7) and (sq+9)
-            attackers = ((bb << 7) & NOT_FILE_H) | ((bb << 9) & NOT_FILE_A)
-        return bool(self.bitboards[int(by_color)][int(PieceType.PAWN)] & attackers)
+            # black pawns attack downwards: diagonals -7 and -9
+            attacks = ((pawns >> 7) & NOT_FILE_A) | ((pawns >> 9) & NOT_FILE_H)
+
+        return bool(attacks & target)
 
     def _is_square_attacked(self, sq: int, by_color: Color) -> bool:
         """Check if square is attacked by any piece of specified color.
@@ -819,28 +812,6 @@ class Board:
                 bb_union |= int(self.bitboards[c][p])
         assert self.all_occupancy == bb_union, "all_occupancy mismatch after pop_state"
 
-    def _pawn_attacks_from(self, pawns_bb: int, color: Color) -> int:
-        """Calculate pawn attacks from given pawn bitboard.
-
-        Args:
-            pawns_bb: Bitboard of pawns
-            color: Color of pawns
-
-        Returns:
-            int: Bitboard of squares attacked by these pawns
-        """
-        if pawns_bb == 0:
-            return 0
-
-        if color == Color.WHITE:
-            left = (pawns_bb << 7) & NOT_FILE_H
-            right = (pawns_bb << 9) & NOT_FILE_A
-        else:
-            left = (pawns_bb >> 9) & NOT_FILE_H
-            right = (pawns_bb >> 7) & NOT_FILE_A
-
-        return left | right
-
     # ------------------------------------------------------------
     # FEN operations
     # ------------------------------------------------------------
@@ -1022,23 +993,31 @@ class Board:
     # ------------------------------------------------------------
     # Internal helper methods
     # ------------------------------------------------------------
+
     def _clear_square(self, sq: int) -> None:
         """Remove qualquer peça do square, atualizando bitboards e mailbox.
 
         Args:
             sq: Square index to clear
         """
-        piece = self.mailbox[sq]
-        if piece is None:
+        cell = self.mailbox[sq]
+        if cell is None:
             return
 
-        color, ptype = piece
+        color, ptype = cell
+        bit = (1 << sq)
 
+        # mailbox
         self.mailbox[sq] = None
-        self.bitboards[int(color)][int(ptype)] ^= (1 << sq)
 
-        self.occupancy[int(color)] ^= (1 << sq)
-        self.all_occupancy ^= (1 << sq)
+        # bitboard removal (AND-NOT)
+        ci = int(color)
+        pi = int(ptype)
+        self.bitboards[ci][pi] &= ~bit
+
+        # occupancy
+        self.occupancy[ci] &= ~bit
+        self.all_occupancy &= ~bit
 
     def _place_piece(self, color: Color, ptype: PieceType, sq: int) -> None:
         """Coloca uma peça no square, atualizando bitboards e mailbox.
@@ -1048,11 +1027,19 @@ class Board:
             ptype: Piece type
             sq: Target square index
         """
+        bit = (1 << sq)
+        ci = int(color)
+        pi = int(ptype)
+
+        # mailbox
         self.mailbox[sq] = (color, ptype)
 
-        self.bitboards[int(color)][int(ptype)] |= (1 << sq)
-        self.occupancy[int(color)] |= (1 << sq)
-        self.all_occupancy |= (1 << sq)
+        # bitboards
+        self.bitboards[ci][pi] |= bit
+
+        # occupancy
+        self.occupancy[ci] |= bit
+        self.all_occupancy |= bit
 
     def _update_occupancy(self) -> None:
         """Recalculate occupancy bitboards from piece bitboards."""
@@ -1080,53 +1067,3 @@ def make_board(fen: str) -> Board:
     """
     return Board.from_fen(fen)
 
-
-# =============================================================================
-# SUGESTÕES DE OTIMIZAÇÃO DE PERFORMANCE
-# =============================================================================
-"""
-OTIMIZAÇÕES SUGERIDAS:
-
-1. CACHE DE ATAQUES:
-   - Implementar cache para bishop_attacks() e rook_attacks() usando occupation
-     como chave, reduzindo recálculos em posições repetidas
-
-2. BITBOARD OPERATIONS:
-   - Usar operações bitwise nativas do Python (|, &, ~, ^) em vez de loops
-   - Considerar usar array.array('Q') ou numpy para operações em lote
-
-3. VALIDAÇÃO CONDICIONAL:
-   - Adicionar flag debug para desabilitar validação em produção
-   - Validar apenas quando DEBUG=True ou em testes
-
-4. MEMORY VIEWS:
-   - Usar memoryview para acesso mais rápido aos arrays de bitboards
-   - Considerar struct.unpack para conversões bitboard
-
-5. LAZY OCCUPANCY CALC:
-   - Calcular all_occupancy apenas quando necessário, não em cada movimento
-   - Manter dirty flag para indicar quando recalcular
-
-6. INLINE FUNCTIONS:
-   - Usar @staticmethod ou @classmethod para funções auxiliares
-   - Considerar functools.lru_cache para funções puras
-
-7. MOVE STACK OPTIMIZATION:
-   - Usar collections.deque para _state_stack se muitos níveis de undo
-   - Implementar delta encoding para estados (armazenar apenas mudanças)
-
-8. TYPE SPECIALIZATION:
-   - Usar ctypes.c_uint64 para bitboards se compatibilidade permitir
-   - Considerar __slots__ para todas as classes para reduzir overhead
-
-9. HOT PATH OPTIMIZATIONS:
-   - Inline _sq_bit() em hot paths (set_piece_at, remove_piece_at)
-   - Pré-computar máscaras comuns (ex: pawn_attack_table[color][square])
-
-10. MEMORY LAYOUT:
-    - Reorganizar bitboards para [piece][color] se acesso por peça for mais comum
-    - Considerar Array of Structs vs Struct of Arrays baseado nos padrões de acesso
-
-NOTA: Estas são apenas sugestões. Medir performance antes e depois de cada
-otimização para validar benefícios em cenários reais.
-"""
