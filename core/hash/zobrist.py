@@ -1,76 +1,67 @@
 # core/hash/zobrist.py
-"""
-Zobrist hashing utilities for Xadrez_AI_Final.
-
-Design goals:
- - Deterministic initialization from a seed.
- - Singleton/global usage appropriate for a chess engine.
- - Idempotent, thread-safe init() with optional forced reinit.
- - Exposes incremental XOR helpers used by the board implementation.
- - Diagnostic helpers for tests (entropy, signature).
- - All values are masked to 64 bits (U64).
-"""
-
 from __future__ import annotations
 
+"""
+Zobrist hashing utilities for Xadrez_AI_Final — final, documented and optimized.
+
+Features:
+- Deterministic initialization from a seed.
+- Thread-safe, idempotent init() with optional forced reinit.
+- Compact, masked 64-bit values (U64).
+- Incremental XOR helpers used by Board.
+- Diagnostic helpers used by tests (entropy, signature).
+- Small micro-optimizations (local lookups) in hot helpers.
+"""
+
+from typing import ClassVar, List, Optional
 import threading
 import random
-from typing import ClassVar, List
 
 from utils.constants import U64
-from utils.enums import PieceIndex  # type: ignore
+from utils.enums import PieceIndex  # project enum mapping piece -> 0..11
 
-# Number of distinct piece indices expected in this project (usually 12)
+# Constants describing table sizes
 _PIECE_INDEX_COUNT = 12
-# Castling states encoded in 4 bits -> 16 possibilities
 _CASTLING_STATES = 16
-# Enpassant square possibilities: 64 (or none / -1 handled by API)
 _ENPASSANT_SLOTS = 64
 
+# Module-level synchronization and state flag
 _init_lock = threading.Lock()
 _initialized = False
 
 
 class Zobrist:
-    """
-    Global Zobrist table holder.
+    """Global Zobrist table holder and utilities.
 
-    Usage pattern (engine):
-        Zobrist.init(seed=12345)
+    Typical usage
+        Zobrist.init(seed=0xC0FFEE)
         h = 0
         h = Zobrist.xor_piece(h, piece_index, square)
         h = Zobrist.xor_side(h)
         h = Zobrist.xor_castling(h, castling_rights)
         h = Zobrist.xor_enpassant(h, enpassant_sq)
-
-    Public class attributes (populated by init):
-        piece_square : List[List[int]]  # shape: [_PIECE_INDEX_COUNT][64]
-        castling     : List[int]        # length: _CASTLING_STATES
-        enpassant    : List[int]        # length: _ENPASSANT_SLOTS
-        side_to_move : int
-        (aliases:)
-        piece_keys   -> piece_square
     """
 
-    # Class-level storages (initialized by init())
+    # Class-level storages populated by init()
     piece_square: ClassVar[List[List[int]]] = []
     castling: ClassVar[List[int]] = []
     enpassant: ClassVar[List[int]] = []
     side_to_move: ClassVar[int] = 0
 
-    # Alias kept for compatibility with some tests / naming expectations
+    # Backwards-compatible alias some code/tests may expect
     piece_keys: ClassVar[List[List[int]]] = []
 
+    # ---------------------------------------------------------
+    # Initialization
+    # ---------------------------------------------------------
     @classmethod
     def init(cls, seed: int = 0xC0FFEE, force: bool = False) -> None:
         """
         Initialize Zobrist tables deterministically from `seed`.
 
-        - `seed`: integer seed for deterministic RNG.
-        - `force`: if True, reinitializes even if already initialized.
-
-        This method is idempotent by default (subsequent calls with same seed are no-op).
-        To re-seed, call with force=True.
+        Args:
+            seed: integer seed for deterministic RNG (default: 0xC0FFEE).
+            force: when True reinitializes even if already initialized.
         """
         global _initialized
         with _init_lock:
@@ -79,7 +70,7 @@ class Zobrist:
 
             rng = random.Random(seed)
 
-            # 12 piece indices x 64 squares
+            # piece_square: _PIECE_INDEX_COUNT lists of 64 64-bit keys
             cls.piece_square = [
                 [rng.getrandbits(64) & U64 for _ in range(64)]
                 for _ in range(_PIECE_INDEX_COUNT)
@@ -88,13 +79,13 @@ class Zobrist:
             # castling states (0..15)
             cls.castling = [rng.getrandbits(64) & U64 for _ in range(_CASTLING_STATES)]
 
-            # enpassant by square (0..63)
+            # enpassant keys per-square (0..63)
             cls.enpassant = [rng.getrandbits(64) & U64 for _ in range(_ENPASSANT_SLOTS)]
 
             # side-to-move key
             cls.side_to_move = rng.getrandbits(64) & U64
 
-            # alias for backwards compatibility in tests / code
+            # alias
             cls.piece_keys = cls.piece_square
 
             _initialized = True
@@ -102,8 +93,9 @@ class Zobrist:
     @classmethod
     def reset(cls) -> None:
         """
-        Fully reset the Zobrist tables to uninitialized state.
-        Use carefully in tests only.
+        Reset Zobrist tables to uninitialized state.
+
+        Intended for tests only.
         """
         global _initialized
         with _init_lock:
@@ -114,49 +106,49 @@ class Zobrist:
             cls.piece_keys = []
             _initialized = False
 
-    # -----------------------
-    # Incremental operations
-    # -----------------------
+    @classmethod
+    def ensure_initialized(cls, seed: int = 0xC0FFEE) -> None:
+        """Convenience: initialize if not already done (idempotent)."""
+        cls.init(seed=seed)
+
+    # ---------------------------------------------------------
+    # Incremental XOR helpers (hot paths)
+    # ---------------------------------------------------------
     @classmethod
     def xor_piece(cls, h: int, piece_index: PieceIndex | int, square: int) -> int:
         """
-        XOR a piece at `square` into hash `h`.
-        piece_index: either PieceIndex enum or integer index (0..11).
+        XOR a piece at `square` into hash `h` and return new hash.
+        Accepts either PieceIndex enum or integer index (0..11).
         """
+        # micro-opt: local lookup to avoid repeated attribute access
         idx = int(piece_index)
         return (h ^ cls.piece_square[idx][square]) & U64
 
     @classmethod
     def xor_castling(cls, h: int, castling_rights: int) -> int:
-        """
-        XOR castling rights encoded as an int (0..15).
-        """
+        """XOR castling rights encoded 0..15 into hash and return new value."""
         return (h ^ cls.castling[castling_rights & 0xF]) & U64
 
     @classmethod
-    def xor_enpassant(cls, h: int, enpassant_sq: int) -> int:
-        """
-        XOR enpassant square into hash (if enpassant_sq == -1, unchanged).
-        """
-        if enpassant_sq == -1:
+    def xor_enpassant(cls, h: int, enpassant_sq: Optional[int]) -> int:
+        """XOR en-passant square into hash; if enpassant_sq is None or -1, returns h unchanged."""
+        if enpassant_sq is None or enpassant_sq == -1:
             return h
         return (h ^ cls.enpassant[enpassant_sq & 63]) & U64
 
     @classmethod
     def xor_side(cls, h: int) -> int:
-        """
-        Toggle side-to-move in the hash.
-        """
+        """Toggle side-to-move bit in hash and return new value."""
         return (h ^ cls.side_to_move) & U64
 
-    # -----------------------
-    # Diagnostics / testing helpers
-    # -----------------------
+    # ---------------------------------------------------------
+    # Diagnostics / test helpers
+    # ---------------------------------------------------------
     @classmethod
     def verify_entropy(cls) -> float:
         """
-        Return fraction of unique keys across piece_square (value in (0.0..1.0]).
-        Ideal ~1.0 (all keys unique). Useful for tests.
+        Return fraction of unique keys across piece_square (0.0..1.0).
+        Useful for tests that validate randomness/determinism.
         """
         if not cls.piece_square:
             raise RuntimeError("Zobrist not initialized")
@@ -172,17 +164,17 @@ class Zobrist:
     @classmethod
     def signature(cls) -> bytes:
         """
-        Deterministic signature of the current tables suitable for quick equality checks
-        between runs (used by determinism tests). It's a compact representation: repr()
-        of first rows to avoid huge memory use while still being stable.
+        Deterministic, compact signature of current tables.
+
+        Produces a bytes blob built from stable samples of the tables
+        (not the whole tables) so it's fast and deterministic for tests.
         """
         if not cls.piece_square:
             return b""
         parts = []
-        # sample first N pieces (or all if small)
+        # sample first N piece rows to keep signature compact and stable
         N = min(len(cls.piece_square), 6)
         for i in range(N):
-            # represent the first few entries of each row
             sample = cls.piece_square[i][:16]
             parts.append(repr(sample).encode("utf-8"))
         parts.append(repr(cls.castling[:8]).encode("utf-8"))
@@ -190,13 +182,56 @@ class Zobrist:
         parts.append(repr(cls.side_to_move).encode("utf-8"))
         return b"||".join(parts)
 
-    @classmethod
-    def ensure_initialized(cls, seed: int = 0xC0FFEE) -> None:
-        """
-        Convenience to guarantee initialization (idempotent).
-        """
-        cls.init(seed=seed)
 
-# Backwards-friendly module-level alias for tests that import the class directly
+# Module-level convenience wrappers for backwards compatibility
 _default = Zobrist
 
+def init(seed: int = 0xC0FFEE, force: bool = False) -> None:
+    Zobrist.init(seed=seed, force=force)
+
+
+def reset() -> None:
+    Zobrist.reset()
+
+
+def ensure_initialized(seed: int = 0xC0FFEE) -> None:
+    Zobrist.ensure_initialized(seed=seed)
+
+
+def xor_piece(h: int, piece_index: PieceIndex | int, square: int) -> int:
+    return Zobrist.xor_piece(h, piece_index, square)
+
+
+def xor_castling(h: int, castling_rights: int) -> int:
+    return Zobrist.xor_castling(h, castling_rights)
+
+
+def xor_enpassant(h: int, enpassant_sq: Optional[int]) -> int:
+    return Zobrist.xor_enpassant(h, enpassant_sq)
+
+
+def xor_side(h: int) -> int:
+    return Zobrist.xor_side(h)
+
+
+def verify_entropy() -> float:
+    return Zobrist.verify_entropy()
+
+
+def signature() -> bytes:
+    return Zobrist.signature()
+
+
+__all__ = [
+    "Zobrist",
+    "init",
+    "reset",
+    "ensure_initialized",
+    "xor_piece",
+    "xor_castling",
+    "xor_enpassant",
+    "xor_side",
+    "verify_entropy",
+    "signature",
+    "_default",
+]

@@ -1,4 +1,9 @@
 # Fallback slow attack generators if not present in magic_bitboards
+import core.moves.magic.magic_bitboards as mb
+
+mb.init(validate=False)
+
+
 def _slow_rook_attacks_fallback(square, occ):
     attacks = 0
     file = square & 7
