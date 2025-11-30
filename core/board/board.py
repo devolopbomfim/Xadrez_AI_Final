@@ -483,47 +483,54 @@ class Board:
         return bool(attacks & target)
 
     def _is_square_attacked(self, sq: int, by_color: Color) -> bool:
-        """Check if square is attacked by any piece of specified color.
-
-        Args:
-            sq: Target square index
-            by_color: Attacking color
-
-        Returns:
-            bool: True if square is attacked by specified color
-        """
+        """Return True if square `sq` is attacked by any piece of `by_color`."""
         occ = self.all_occupancy
         ci = int(by_color)
 
-        # 1. Pawn attacks
+        # ------------------------
+        # Pawn attacks
+        # ------------------------
         if self._pawn_attacked(sq, by_color):
             return True
 
-        # 2. Knight attacks
+        # ------------------------
+        # Knight attacks
+        # ------------------------
         knights = self.bitboards[ci][int(PieceType.KNIGHT)]
-        knight_mask = knight_attacks(sq)
-        if knights & knight_mask:
+        if knights & knight_attacks(sq):
             return True
 
-        # 3. Bishop + Queen diagonals
-        diag_attackers = (self.bitboards[ci][int(PieceType.BISHOP)] |
-                          self.bitboards[ci][int(PieceType.QUEEN)])
-        if diag_attackers and bishop_attacks(sq, occ) & diag_attackers:
+        # ------------------------
+        # Bishop/Queen diagonals
+        # ------------------------
+        diag_attackers = (
+                self.bitboards[ci][int(PieceType.BISHOP)]
+                | self.bitboards[ci][int(PieceType.QUEEN)]
+        )
+        if diag_attackers and (bishop_attacks(sq, occ) & diag_attackers):
             return True
 
-        # 4. Rook + Queen files/ranks
-        straight_attackers = (self.bitboards[ci][int(PieceType.ROOK)] |
-                              self.bitboards[ci][int(PieceType.QUEEN)])
-        if straight_attackers and rook_attacks(sq, occ) & straight_attackers:
+        # ------------------------
+        # Rook/Queen straight lines
+        # ------------------------
+        straight_attackers = (
+                self.bitboards[ci][int(PieceType.ROOK)]
+                | self.bitboards[ci][int(PieceType.QUEEN)]
+        )
+        if straight_attackers and (rook_attacks(sq, occ) & straight_attackers):
             return True
 
-        # 5. King adjacency
-        king = self.bitboards[ci][int(PieceType.KING)]
-        if king and (king_attacks((king & -king).bit_length() - 1) & (1 << sq)):
-            return True
+        # ------------------------
+        # King adjacency
+        # ------------------------
+        king_bb = self.bitboards[ci][int(PieceType.KING)]
+        if king_bb:
+            # extrai o único bit do rei
+            king_sq = (king_bb & -king_bb).bit_length() - 1
+            if king_attacks(king_sq) & (1 << sq):
+                return True
 
         return False
-
 
     def is_in_check(self, color: Color) -> bool:
         """Check if king of specified color is in check.
@@ -573,135 +580,40 @@ class Board:
         self.en_passant_square = None
 
         # ====================================================
-        # CAPTURA (normal ou en-passant)
+        # CAPTURA (normal + en-passant)
         # ====================================================
-        if (piece == PieceType.PAWN and move.is_capture and
-                old_ep is not None and to_sq == old_ep):
-            # En passant capture
-            cap_sq = to_sq - 8 if stm == Color.WHITE else to_sq + 8
-            self._clear_square(cap_sq)
-            cap_index = int(enemy) * 6 + int(PieceType.PAWN)
-            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, cap_index, cap_sq)
-        elif move.is_capture:
-            # Normal capture
-            captured = self.mailbox[to_sq]  # <-- vem do board, não do Move
-
-            if captured is not None:
-                cap_color, cap_piece = captured
-                cap_index = int(cap_color) * 6 + int(cap_piece)
-
-                # remove a peça capturada do hash
-                self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, cap_index, to_sq)
-
-            self._clear_square(to_sq)
+        self._do_capture(move, stm, enemy, to_sq, old_ep)
 
         # ====================================================
         # MOVIMENTO PRINCIPAL
         # ====================================================
-        self._clear_square(from_sq)
-        self._place_piece(stm, piece, to_sq)
-        piece_index = int(stm) * 6 + int(piece)
-
-        # remove peça da origem
-        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, piece_index, from_sq)
-        # adiciona peça no destino
-        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, piece_index, to_sq)
+        self._do_move_piece(stm, piece, from_sq, to_sq)
 
         # ====================================================
-        # ROQUE (com atualização Zobrist)
+        # ROQUE
         # ====================================================
         if piece == PieceType.KING and abs(to_sq - from_sq) == 2:
-
-            rook_index = int(stm) * 6 + int(PieceType.ROOK)
-
-            if stm == Color.WHITE:
-                # O-O  (e1 -> g1)
-                if to_sq == 6:
-                    rook_from, rook_to = 7, 5  # h1 -> f1
-
-                # O-O-O (e1 -> c1)
-                elif to_sq == 2:
-                    rook_from, rook_to = 0, 3  # a1 -> d1
-
-            else:
-                # O-O (e8 -> g8)
-                if to_sq == 62:
-                    rook_from, rook_to = 63, 61  # h8 -> f8
-
-                # O-O-O (e8 -> c8)
-                elif to_sq == 58:
-                    rook_from, rook_to = 56, 59  # a8 -> d8
-
-            # remove torre da origem
-            self._clear_square(rook_from)
-            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, rook_index, rook_from)
-
-            # coloca torre no destino
-            self._place_piece(stm, PieceType.ROOK, rook_to)
-            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, rook_index, rook_to)
+            self._do_castling(stm, from_sq, to_sq)
 
         # ====================================================
         # PROMOÇÃO
         # ====================================================
-        if piece == PieceType.PAWN and move.promotion is not None:
-            self._clear_square(to_sq)
-            self._place_piece(stm, move.promotion, to_sq)
-            pawn_index = int(stm) * 6 + int(PieceType.PAWN)
-            promo_index = int(stm) * 6 + int(move.promotion)
-
-            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, pawn_index, to_sq)
-            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, promo_index, to_sq)
+        self._do_promotion(stm, move, to_sq)
 
         # ====================================================
         # CASTLING RIGHTS
         # ====================================================
-        # King move removes castling rights
-        if piece == PieceType.KING:
-            if stm == Color.WHITE:
-                self.castling_rights &= ~(CASTLE_WHITE_K | CASTLE_WHITE_Q)
-            else:
-                self.castling_rights &= ~(CASTLE_BLACK_K | CASTLE_BLACK_Q)
-
-        # Rook move removes corresponding castling right
-        if piece == PieceType.ROOK:
-            if stm == Color.WHITE:
-                if from_sq == 0:
-                    self.castling_rights &= ~CASTLE_WHITE_Q
-                elif from_sq == 7:
-                    self.castling_rights &= ~CASTLE_WHITE_K
-            else:
-                if from_sq == 56:
-                    self.castling_rights &= ~CASTLE_BLACK_Q
-                elif from_sq == 63:
-                    self.castling_rights &= ~CASTLE_BLACK_K
-
-        # Capture on rook square removes corresponding castling right
-        if move.is_capture:
-            if to_sq == 0:
-                self.castling_rights &= ~CASTLE_WHITE_Q
-            elif to_sq == 7:
-                self.castling_rights &= ~CASTLE_WHITE_K
-            elif to_sq == 56:
-                self.castling_rights &= ~CASTLE_BLACK_Q
-            elif to_sq == 63:
-                self.castling_rights &= ~CASTLE_BLACK_K
+        self._do_castling_rights_update(stm, piece, from_sq, to_sq, move)
 
         # ====================================================
-        # EN PASSANT (novo)
+        # EN PASSANT (already handled)
         # ====================================================
-        if piece == PieceType.PAWN and abs(to_sq - from_sq) == 16:
-            self.en_passant_square = (from_sq + to_sq) // 2
+        self._do_en_passant_update(piece, from_sq, to_sq)
 
         # ====================================================
-        # ATUALIZAÇÃO HALFMOVE / FULLMOVE (REGRA DOS 50 LANCES)
+        # HALF-MOVE / FULLMOVE UPDATE (helper)
         # ====================================================
-        # Reseta o halfmove_clock se foi movimento de peão ou captura (inclui en-passant e promo)
-        # Caso contrário incrementa em 1.
-        if piece == PieceType.PAWN or move.is_capture or (move.promotion is not None):
-            self.halfmove_clock = 0
-        else:
-            # incrementa halfmove_clock para half-move não-captura/não-peão
-            self.halfmove_clock += 1
+        self._do_fullmove_halfmove_update(stm, piece, move)
 
         # ====================================================
         # ATUALIZAR OCCUPANCY
@@ -711,24 +623,16 @@ class Board:
         # ====================================================
         # TROCA DE LADO
         # ====================================================
-        #print("movimento", self.side_to_move) # movimento Color.WHITE or BLACK
         self.side_to_move = enemy
 
         # ====================================================
-        # FULLMOVE: incrementa após a jogada do preto
+        # ZOBRIST: aplicar novos estados
         # ====================================================
-        # 'stm' contém quem fez o movimento antes da troca de lado.
-        if stm == Color.BLACK:
-            self.fullmove_number += 1
-
-        # aplicar novo castling
         self.zobrist_key = Zobrist.xor_castling(self.zobrist_key, self.castling_rights)
 
-        # aplicar novo en passant
         if self.en_passant_square is not None:
             self.zobrist_key = Zobrist.xor_enpassant(self.zobrist_key, self.en_passant_square)
 
-        # alternar lado
         self.zobrist_key = Zobrist.xor_side(self.zobrist_key)
 
     def unmake_move(self) -> None:
@@ -1055,6 +959,156 @@ class Board:
         )
 
         self.all_occupancy = self.occupancy[0] | self.occupancy[1]
+
+    def _do_capture(self, move: Move, stm: Color, enemy: Color, to_sq: int, old_ep: int | None) -> None:
+        """Executa captura normal ou en-passant, com atualização Zobrist."""
+
+        # En passant capture
+        if (move.piece == PieceType.PAWN and move.is_capture and
+                old_ep is not None and to_sq == old_ep):
+            cap_sq = to_sq - 8 if stm == Color.WHITE else to_sq + 8
+            self._clear_square(cap_sq)
+
+            cap_index = int(enemy) * 6 + int(PieceType.PAWN)
+            self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, cap_index, cap_sq)
+            return
+
+        # Captura normal
+        if move.is_capture:
+            captured = self.mailbox[to_sq]  # leitura real do board
+            if captured is not None:
+                cap_color, cap_piece = captured
+                cap_index = int(cap_color) * 6 + int(cap_piece)
+                self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, cap_index, to_sq)
+
+            self._clear_square(to_sq)
+
+    def _do_move_piece(self, stm: Color, piece: PieceType, from_sq: int, to_sq: int) -> None:
+        """Execute the main piece move (clear source, place on dest) and update Zobrist."""
+        # clear origem e coloca destino usando helpers já existentes
+        self._clear_square(from_sq)
+        self._place_piece(stm, piece, to_sq)
+
+        # atualizar hash: remove peça na origem, adiciona no destino
+        piece_index = int(stm) * 6 + int(piece)
+        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, piece_index, from_sq)
+        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, piece_index, to_sq)
+
+    def _do_castling(self, stm: Color, from_sq: int, to_sq: int) -> None:
+        """Executa roque, atualizando bitboards, mailbox e Zobrist.
+
+        Pré-condição: chamada somente quando piece == KING e abs(to_sq - from_sq) == 2.
+        """
+        rook_index = int(stm) * 6 + int(PieceType.ROOK)
+
+        # Determinar origem/destino da torre
+        if stm == Color.WHITE:
+            if to_sq == 6:  # O-O (e1 -> g1)
+                rook_from, rook_to = 7, 5  # h1 -> f1
+            elif to_sq == 2:  # O-O-O (e1 -> c1)
+                rook_from, rook_to = 0, 3  # a1 -> d1
+            else:
+                return
+        else:  # BLACK
+            if to_sq == 62:  # O-O (e8 -> g8)
+                rook_from, rook_to = 63, 61  # h8 -> f8
+            elif to_sq == 58:  # O-O-O (e8 -> c8)
+                rook_from, rook_to = 56, 59  # a8 -> d8
+            else:
+                return
+
+        # remover torre da origem
+        self._clear_square(rook_from)
+        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, rook_index, rook_from)
+
+        # colocar torre no destino
+        self._place_piece(stm, PieceType.ROOK, rook_to)
+        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, rook_index, rook_to)
+
+    def _do_promotion(self, stm: Color, move: Move, to_sq: int) -> None:
+        """Executa promoção: remove o peão e coloca a peça promovida.
+           Atualiza Zobrist exatamente como no código original.
+        """
+        promo = move.promotion
+        if promo is None:
+            return
+
+        # remover o peão que chegou no destino
+        self._clear_square(to_sq)
+
+        # colocar a peça promovida
+        self._place_piece(stm, promo, to_sq)
+
+        pawn_index = int(stm) * 6 + int(PieceType.PAWN)
+        promo_index = int(stm) * 6 + int(promo)
+
+        # atualizar Zobrist: remove PAWN no destino, adiciona promoção
+        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, pawn_index, to_sq)
+        self.zobrist_key = Zobrist.xor_piece(self.zobrist_key, promo_index, to_sq)
+
+    def _do_castling_rights_update(self, stm: Color, piece: PieceType, from_sq: int, to_sq: int, move: Move) -> None:
+        """Atualiza direitos de roque exatamente como no código original."""
+        # King move removes castling rights
+        if piece == PieceType.KING:
+            if stm == Color.WHITE:
+                self.castling_rights &= ~(CASTLE_WHITE_K | CASTLE_WHITE_Q)
+            else:
+                self.castling_rights &= ~(CASTLE_BLACK_K | CASTLE_BLACK_Q)
+
+        # Rook move removes corresponding castling right
+        if piece == PieceType.ROOK:
+            if stm == Color.WHITE:
+                if from_sq == 0:
+                    self.castling_rights &= ~CASTLE_WHITE_Q
+                elif from_sq == 7:
+                    self.castling_rights &= ~CASTLE_WHITE_K
+            else:
+                if from_sq == 56:
+                    self.castling_rights &= ~CASTLE_BLACK_Q
+                elif from_sq == 63:
+                    self.castling_rights &= ~CASTLE_BLACK_K
+
+        # Capture on rook square removes corresponding castling right
+        if move.is_capture:
+            if to_sq == 0:
+                self.castling_rights &= ~CASTLE_WHITE_Q
+            elif to_sq == 7:
+                self.castling_rights &= ~CASTLE_WHITE_K
+            elif to_sq == 56:
+                self.castling_rights &= ~CASTLE_BLACK_Q
+            elif to_sq == 63:
+                self.castling_rights &= ~CASTLE_BLACK_K
+
+    def _do_en_passant_update(self, piece: PieceType, from_sq: int, to_sq: int) -> None:
+        """Atualiza corretamente a square de en-passant."""
+        # reset sempre antes (regra padrão)
+        self.en_passant_square = None
+
+        # só peão que avança 2 casas cria uma EP square
+        if piece == PieceType.PAWN and abs(to_sq - from_sq) == 16:
+            self.en_passant_square = (from_sq + to_sq) // 2
+
+    def _do_fullmove_halfmove_update(
+            self,
+            stm: Color,
+            piece: PieceType,
+            move: "Move"
+    ) -> None:
+        """Atualiza halfmove_clock (regra dos 50 lances) e fullmove_number."""
+        # -------------------------------------
+        # HALF-MOVE CLOCK (regra dos 50 lances)
+        # -------------------------------------
+        # Reset sempre se: peão moveu, houve captura, ou houve promoção
+        if piece == PieceType.PAWN or move.is_capture or (move.promotion is not None):
+            self.halfmove_clock = 0
+        else:
+            self.halfmove_clock += 1
+
+        # -------------------------------------
+        # FULLMOVE NUMBER (incrementa após lance das pretas)
+        # -------------------------------------
+        if stm == Color.BLACK:
+            self.fullmove_number += 1
 
 
 def make_board(fen: str) -> Board:
