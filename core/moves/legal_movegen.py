@@ -1,74 +1,10 @@
 # core/moves/legal_movegen.py
 from __future__ import annotations
 
+from core.moves.castling import _gen_castling_moves
 from utils.enums import Color, PieceType
-from utils.constants import U64, NOT_FILE_A, NOT_FILE_H, SQUARE_BB
-from core.moves.tables.attack_tables import knight_attacks, king_attacks
-from core.moves.magic.magic_bitboards import rook_attacks, bishop_attacks
-from core.moves.movegen import generate_pseudo_legal_moves, _gen_castling_moves
+from core.moves.movegen import generate_pseudo_legal_moves
 
-BIT_ONE = 1
-
-def _bit(sq: int) -> int:
-    return (BIT_ONE << sq) & U64
-
-def _opposite(color: Color) -> Color:
-    return Color.BLACK if color == Color.WHITE else Color.WHITE
-
-def _find_king_square(board, color: Color) -> int:
-    for sq, cell in enumerate(board.mailbox):
-        if cell is not None:
-            c, p = cell
-            if c == color and p == PieceType.KING:
-                return sq
-    raise RuntimeError("Rei não encontrado no tabuleiro.")
-
-def _is_square_attacked(board, sq: int, by_color: Color) -> bool:
-    """
-    Função utilitária (API livre) que delega ao método de instância se presente,
-    ou em último caso replica a lógica mínima usando as tabelas de ataque.
-    Mantém compatibilidade com chamadas existentes em generate_legal_moves.
-    """
-    # se a instância implementa o método membro, use-o
-    if hasattr(board, "_is_square_attacked") and callable(getattr(board, "_is_square_attacked")):
-        return board._is_square_attacked(sq, by_color)
-
-    # fallback (não esperado se Board já tem o método)
-    occ = board.all_occupancy
-    target = SQUARE_BB[sq]
-    ci = int(by_color)
-
-    # pawn attacks
-    # reusar a mesma lógica do _is_legal_ep para pawns
-    enemy_pawns = board.bitboards[ci][int(PieceType.PAWN)]
-    if by_color == Color.WHITE:
-        pawn_attacks = ((enemy_pawns << 7) & NOT_FILE_H) | ((enemy_pawns << 9) & NOT_FILE_A)
-    else:
-        pawn_attacks = ((enemy_pawns >> 7) & NOT_FILE_A) | ((enemy_pawns >> 9) & NOT_FILE_H)
-    if pawn_attacks & target:
-        return True
-
-    # knight
-    knights = board.bitboards[ci][int(PieceType.KNIGHT)]
-    if knights & knight_attacks(sq):
-        return True
-
-    # bishops + queens (diagonals)
-    diag_attackers = board.bitboards[ci][int(PieceType.BISHOP)] | board.bitboards[ci][int(PieceType.QUEEN)]
-    if diag_attackers and (bishop_attacks(sq, occ) & diag_attackers):
-        return True
-
-    # rooks + queens (straights)
-    straight_attackers = board.bitboards[ci][int(PieceType.ROOK)] | board.bitboards[ci][int(PieceType.QUEEN)]
-    if straight_attackers and (rook_attacks(sq, occ) & straight_attackers):
-        return True
-
-    # king adjacency
-    king = board.bitboards[ci][int(PieceType.KING)]
-    if king and (king_attacks(sq) & king):
-        return True
-
-    return False
 
 def _is_legal_ep(board, move) -> bool:
     """

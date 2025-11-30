@@ -1,0 +1,38 @@
+diff --git a/core/board/board.py b/core/board/board.py
+index 0000000..0000000 100644
+--- a/core/board/board.py
++++ b/core/board/board.py
+@@ -615,23 +615,25 @@ class Board:
+ 
+     def _pawn_attacked(self, sq: int, by_color: Color) -> bool:
+         """Return True if square `sq` is attacked by a pawn of `by_color`.
+-
+-        This is computed by generating the pawn attack mask landing on `sq` and
+-        intersecting with actual pawn bitboard of `by_color`.
+-
+-        Args:
+-            sq: Target square index
+-            by_color: Attacking color
+-
+-        Returns:
+-            bool: True if square is attacked by pawn of specified color
+         """
+-        bb = SQUARE_BB[sq]
+-        if by_color == Color.WHITE:
+-            # white pawns attack up: from (sq-7) and (sq-9)
+-            attackers = ((bb >> 7) & NOT_FILE_A) | ((bb >> 9) & NOT_FILE_H)
+-        else:
+-            # black pawns attack down: from (sq+7) and (sq+9)
+-            attackers = ((bb << 7) & NOT_FILE_H) | ((bb << 9) & NOT_FILE_A)
+-        return bool(self.bitboards[int(by_color)][int(PieceType.PAWN)] & attackers)
++        pawns = self.bitboards[int(by_color)][int(PieceType.PAWN)]
++        target = SQUARE_BB[sq]
++
++        if by_color == Color.WHITE:
++            # white pawns attack upwards: diagonals +7 and +9
++            attacks = ((pawns << 7) & NOT_FILE_H) | ((pawns << 9) & NOT_FILE_A)
++        else:
++            # black pawns attack downwards: diagonals -7 and -9
++            attacks = ((pawns >> 7) & NOT_FILE_A) | ((pawns >> 9) & NOT_FILE_H)
++
++        return bool(attacks & target)

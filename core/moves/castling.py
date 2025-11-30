@@ -1,3 +1,4 @@
+#castling.py
 from __future__ import annotations
 
 from typing import List
@@ -26,23 +27,23 @@ def _gen_castling_moves(board) -> List[Move]:
         # king-side
         if board.castling_rights & CASTLE_WHITE_K:
             if not (board.all_occupancy & (SQUARE_BB[5] | SQUARE_BB[6])):
-                if not board._is_square_attacked(4, enemy) and not board._is_square_attacked(5, enemy) and not board._is_square_attacked(6, enemy):
+                if not board.is_square_attacked(4, enemy) and not board.is_square_attacked(5, enemy) and not board.is_square_attacked(6, enemy):
                     moves.append(Move(4, 6, PieceType.KING))
         # queen-side
         if board.castling_rights & CASTLE_WHITE_Q:
             if not (board.all_occupancy & (SQUARE_BB[1] | SQUARE_BB[2] | SQUARE_BB[3])):
-                if not board._is_square_attacked(4, enemy) and not board._is_square_attacked(3, enemy) and not board._is_square_attacked(2, enemy):
+                if not board.is_square_attacked(4, enemy) and not board.is_square_attacked(3, enemy) and not board.is_square_attacked(2, enemy):
                     moves.append(Move(4, 2, PieceType.KING))
     else:
         # black king-side
         if board.castling_rights & CASTLE_BLACK_K:
             if not (board.all_occupancy & (SQUARE_BB[61] | SQUARE_BB[62])):
-                if not board._is_square_attacked(60, enemy) and not board._is_square_attacked(61, enemy) and not board._is_square_attacked(62, enemy):
+                if not board.is_square_attacked(60, enemy) and not board.is_square_attacked(61, enemy) and not board.is_square_attacked(62, enemy):
                     moves.append(Move(60, 62, PieceType.KING))
         # black queen-side
         if board.castling_rights & CASTLE_BLACK_Q:
             if not (board.all_occupancy & (SQUARE_BB[57] | SQUARE_BB[58] | SQUARE_BB[59])):
-                if not board._is_square_attacked(60, enemy) and not board._is_square_attacked(59, enemy) and not board._is_square_attacked(58, enemy):
+                if not board.is_square_attacked(60, enemy) and not board.is_square_attacked(59, enemy) and not board.is_square_attacked(58, enemy):
                     moves.append(Move(60, 58, PieceType.KING))
 
     return moves

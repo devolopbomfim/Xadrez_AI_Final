@@ -158,21 +158,21 @@ def test_rook_blocked():
 
 
 # ============================================================
-# 7. _is_square_attacked
+# 7. is_square_attacked
 # ============================================================
 
 def test_square_attacked_by_rook():
     board = Board(setup=False)
     board.clear()
     board.set_piece_at(square_index("a1"), Color.WHITE, PieceType.ROOK)
-    assert board._is_square_attacked(square_index("a8"), Color.WHITE)
+    assert board.is_square_attacked(square_index("a8"), Color.WHITE)
 
 
 def test_square_not_attacked():
     board = Board(setup=False)
     board.clear()
     board.set_piece_at(square_index("a1"), Color.WHITE, PieceType.ROOK)
-    assert not board._is_square_attacked(square_index("h8"), Color.WHITE)
+    assert not board.is_square_attacked(square_index("h8"), Color.WHITE)
 
 
 # ============================================================

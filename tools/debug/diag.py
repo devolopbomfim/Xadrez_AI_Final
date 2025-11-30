@@ -292,6 +292,7 @@ class Diagnostics:
         self.test_zobrist_deterministic()
         self.test_perft(2)
         self.test_perft(3)
+        self.test_perft(4)
         self.test_en_passant_case()
         self.test_castling_case()
 

@@ -16,19 +16,13 @@ from utils.constants import (
 )
 from utils.enums import Color, PieceType
 
-__all__ = ["Board", "make_board", "square_index"]
+__all__ = ["Board", "square_index"]
 
 # ------------------------------------------------------------
 # Precomputed bit masks
 # ------------------------------------------------------------
 # PERF: Precompute single-square bit masks to avoid repeated shifts in hot paths.
 SQUARE_BB: tuple[int, ...] = tuple(1 << sq for sq in range(64))
-
-
-def _sq_bit(square: int) -> int:
-    """Return the bitboard mask for `square`. Uses precomputed table for speed."""
-    return SQUARE_BB[square]
-
 
 # mailbox cell: None | (Color, PieceType)
 MailboxCell = Optional[Tuple[Color, PieceType]]
@@ -436,34 +430,6 @@ class Board:
         sqi = square_index(square)
         self.set_piece_at(sqi, color, piece)
 
-    @property
-    def pieces(self) -> dict:
-        """
-        Adapter para compatibilidade com movegen legado.
-        NÃO é fonte da verdade. Apenas reflete self.bitboards.
-
-        Returns:
-            Dictionary mapping colors to piece bitboards
-        """
-        return {
-            Color.WHITE: {
-                PieceType.PAWN: self.bitboards[int(Color.WHITE)][int(PieceType.PAWN)],
-                PieceType.KNIGHT: self.bitboards[int(Color.WHITE)][int(PieceType.KNIGHT)],
-                PieceType.BISHOP: self.bitboards[int(Color.WHITE)][int(PieceType.BISHOP)],
-                PieceType.ROOK: self.bitboards[int(Color.WHITE)][int(PieceType.ROOK)],
-                PieceType.QUEEN: self.bitboards[int(Color.WHITE)][int(PieceType.QUEEN)],
-                PieceType.KING: self.bitboards[int(Color.WHITE)][int(PieceType.KING)],
-            },
-            Color.BLACK: {
-                PieceType.PAWN: self.bitboards[int(Color.BLACK)][int(PieceType.PAWN)],
-                PieceType.KNIGHT: self.bitboards[int(Color.BLACK)][int(PieceType.KNIGHT)],
-                PieceType.BISHOP: self.bitboards[int(Color.BLACK)][int(PieceType.BISHOP)],
-                PieceType.ROOK: self.bitboards[int(Color.BLACK)][int(PieceType.ROOK)],
-                PieceType.QUEEN: self.bitboards[int(Color.BLACK)][int(PieceType.QUEEN)],
-                PieceType.KING: self.bitboards[int(Color.BLACK)][int(PieceType.KING)],
-            },
-        }
-
     # ------------------------------------------------------------
     # Attack / check helpers
     # ------------------------------------------------------------
@@ -482,7 +448,7 @@ class Board:
 
         return bool(attacks & target)
 
-    def _is_square_attacked(self, sq: int, by_color: Color) -> bool:
+    def is_square_attacked(self, sq: int, by_color: Color) -> bool:
         """Return True if square `sq` is attacked by any piece of `by_color`."""
         occ = self.all_occupancy
         ci = int(by_color)
@@ -548,7 +514,7 @@ class Board:
             return False
 
         king_sq = (king_bb & -king_bb).bit_length() - 1
-        return self._is_square_attacked(king_sq, enemy)
+        return self.is_square_attacked(king_sq, enemy)
 
     def make_move(self, move: Move) -> None:
         """
@@ -1109,16 +1075,3 @@ class Board:
         # -------------------------------------
         if stm == Color.BLACK:
             self.fullmove_number += 1
-
-
-def make_board(fen: str) -> Board:
-    """Factory function to create board from FEN string.
-
-    Args:
-        fen: FEN string representation
-
-    Returns:
-        Board: New board instance with position from FEN
-    """
-    return Board.from_fen(fen)
-

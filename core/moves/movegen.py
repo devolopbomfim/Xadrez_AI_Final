@@ -14,12 +14,6 @@ from core.moves.castling import _gen_castling_moves
 # -------------------------
 # Small utilities
 # -------------------------
-def _iter_bits(bb: int) -> Iterable[int]:
-    """Yield square indices for set bits (LSB-first)."""
-    while bb:
-        lsb = bb & -bb
-        yield lsb.bit_length() - 1
-        bb ^= lsb
 
 def _bb_to_moves(board, from_sq: int, target_bb: int, piece: PieceType, occ_enemy: int) -> List[Move]:
     """Convert target bitboard into Move objects for a given from_sq / piece."""
