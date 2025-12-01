@@ -13,13 +13,18 @@ Objetivo:
 
 from __future__ import annotations
 from enum import IntEnum
-from typing import TypeAlias, Tuple
+from typing import Tuple
+try:
+    from typing import TypeAlias
+except ImportError:
+    # Python 3.8 compatibility: TypeAlias não existe
+    TypeAlias = type(None)
 
 # ---------------------------------------------------------
 # Tipos semânticos
 # ---------------------------------------------------------
 
-PieceIndex: TypeAlias = int   # usado em bitboards e arrays indexados
+PieceIndex = int   # usado em bitboards e arrays indexados (int compatível com Python 3.8)
 
 __all__ = [
     "Color",

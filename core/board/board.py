@@ -5,7 +5,7 @@
 # Hot paths: set_piece_at, remove_piece_at, move_piece, validate, copy.
 from __future__ import annotations
 
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Union
 from core.hash.zobrist import Zobrist
 from core.moves.tables.attack_tables import knight_attacks, king_attacks
 from core.moves.magic.magic_bitboards import bishop_attacks, rook_attacks
@@ -376,7 +376,9 @@ class Board:
         for c in Color:
             king_bb = self.bitboards[int(c)][king_index]
             if king_bb != 0:  # only validate if king exists
-                assert king_bb.bit_count() == 1, f"Invalid king count for {c}"
+                # bit_count() is Python 3.10+; fallback for 3.8/3.9
+                count = bin(king_bb).count('1')
+                assert count == 1, f"Invalid king count for {c}"
 
     # ------------------------------------------------------------
     # Starting Position
@@ -926,7 +928,7 @@ class Board:
 
         self.all_occupancy = self.occupancy[0] | self.occupancy[1]
 
-    def _do_capture(self, move: Move, stm: Color, enemy: Color, to_sq: int, old_ep: int | None) -> None:
+    def _do_capture(self, move: Move, stm: Color, enemy: Color, to_sq: int, old_ep: Optional[int]) -> None:
         """Executa captura normal ou en-passant, com atualização Zobrist."""
 
         # En passant capture

@@ -6,107 +6,101 @@ from core.moves.movegen import generate_pseudo_legal_moves
 from utils.enums import PieceType
 
 
-def _is_legal_ep(board, move) -> bool:
+# ---------------------------------------------------------------
+# Helpers extremamente otimizados
+# ---------------------------------------------------------------
+
+def _is_legal_ep(board, move, is_in_check):
     """
-    Verifica legalidade de en-passant.
-
-    Um en-passant pseudolegal pode ser ilegal caso:
-    - a captura remova um peão que protegia o rei
-    - o lance exponha o próprio rei à captura
-
-    Lógica:
-        - simula make_move
-        - consulta board.is_in_check(stm)
-        - desfaz com unmake_move
-
-    Retorna:
-        True  → en-passant é legal
-        False → EP expõe o rei e não pode ser jogado
+    Versão otimizada: reduz lookups, inline local, sem lógica extra.
     """
     stm = board.side_to_move
-
     board.make_move(move)
     try:
-        in_check = board.is_in_check(stm)
+        return not is_in_check(stm)
     finally:
         board.unmake_move()
-
-    return not in_check
 
 
 def generate_legal_moves(board):
     """
-    Gera todos os movimentos legais para a posição atual.
-
-    Pipeline:
-        1. Gera pseudo-legais (sem verificar cheque).
-        2. Adiciona roques válidos via _gen_castling_moves.
-        3. Filtra:
-            - captura de rei (ilegal em Xadrez)
-            - en-passant que expõe o rei
-            - movimentos que deixam o rei em cheque (make/unmake)
-
-    Retorna:
-        list[Move] contendo apenas lances legalmente válidos.
+    Versão otimizada para velocidade máxima.
+    Mantém legalidade 100% consistente com perft.
     """
 
+    # Bind locais (reduz attribute lookup)
     stm = board.side_to_move
+    mailbox = board.mailbox
+    ep_sq = board.en_passant_square
 
-    # ----------------------------------------------------------------------
-    # 1. Pseudo-legais
-    # ----------------------------------------------------------------------
+    is_in_check = board.is_in_check
+    make_move = board.make_move
+    unmake_move = board.unmake_move
+
+    PT_KING = PieceType.KING
+    PT_PAWN = PieceType.PAWN
+
+    # ---------------------------------------------------------------
+    # 1. Pseudolegais (já otimizados no gerador)
+    # ---------------------------------------------------------------
     pseudo = list(generate_pseudo_legal_moves(board))
 
-    # ----------------------------------------------------------------------
-    # 2. Movimentos de roque (sem duplicação)
-    # ----------------------------------------------------------------------
-    castlings = _gen_castling_moves(board)
+    # ---------------------------------------------------------------
+    # 2. Roques — minimiza tuplas temporárias
+    # ---------------------------------------------------------------
+    seen = set()
+    add = seen.add
 
-    seen = {(m.from_sq, m.to_sq, int(m.piece)) for m in pseudo}
-    for c in castlings:
-        key = (c.from_sq, c.to_sq, int(c.piece))
-        if key not in seen:
+    for m in pseudo:
+        add((m.from_sq, m.to_sq, int(m.piece)))
+
+    for c in _gen_castling_moves(board):
+        sig = (c.from_sq, c.to_sq, int(c.piece))
+        if sig not in seen:
             pseudo.append(c)
-            seen.add(key)
+            add(sig)
 
-    # ----------------------------------------------------------------------
-    # 3. Filtragem final
-    # ----------------------------------------------------------------------
-    legal_moves = []
+    # ---------------------------------------------------------------
+    # 3. Loop de filtragem — crítico de desempenho
+    # ---------------------------------------------------------------
+    legal = []
+    legal_append = legal.append
 
     for move in pseudo:
 
-        # ------------------------------------------------------------------
-        # 3.a Bloqueio absoluto: não existe captura de rei no Xadrez
-        # ------------------------------------------------------------------
-        target = board.mailbox[move.to_sq]
+        to_sq = move.to_sq
+
+        # -----------------------------------------------------------
+        # (A) Captura de rei — checagem imediata, custo mínimo
+        # -----------------------------------------------------------
+        target = mailbox[to_sq]
         if target is not None:
-            _, target_piece = target
-            if target_piece == PieceType.KING:
+            # Unpack local reduz overhead
+            _, t_piece = target
+            if t_piece == PT_KING:
                 continue
 
-        # ------------------------------------------------------------------
-        # 3.b Caso especial: En-passant pode expor o rei
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------------
+        # (B) EP — caminho raro; evitar branches quando possível
+        # -----------------------------------------------------------
         if (
-            move.piece == PieceType.PAWN
+            ep_sq is not None
+            and move.piece == PT_PAWN
             and move.is_capture
-            and board.en_passant_square is not None
-            and move.to_sq == board.en_passant_square
+            and to_sq == ep_sq
         ):
-            if not _is_legal_ep(board, move):
+            if not _is_legal_ep(board, move, is_in_check):
                 continue
 
-        # ------------------------------------------------------------------
-        # 3.c Teste universal: faz o lance → verifica cheque → desfaz
-        # ------------------------------------------------------------------
-        board.make_move(move)
+        # -----------------------------------------------------------
+        # (C) Teste universal via make/unmake — maior custo
+        # -----------------------------------------------------------
+        make_move(move)
         try:
-            in_check = board.is_in_check(stm)
+            # Verificar se rei próprio fica em cheque
+            if not is_in_check(stm):
+                legal_append(move)
         finally:
-            board.unmake_move()
+            unmake_move()
 
-        if not in_check:
-            legal_moves.append(move)
-
-    return legal_moves
+    return legal

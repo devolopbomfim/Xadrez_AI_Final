@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+# ============================================================
+# Helper: bit count para Python 3.8+ compatibility
+# ============================================================
+
+def _bit_count(x: int) -> int:
+    """Count set bits in integer (Python 3.8 compatible fallback)."""
+    try:
+        return x.bit_count()  # Python 3.10+
+    except AttributeError:
+        return bin(x).count('1')  # Python 3.8/3.9
+
+
 """
 Magic bitboards implementation — versão final, test-compatible.
 
@@ -11,7 +23,7 @@ Características:
 - Expõe utilitários de debug/validação (index_to_occupancy, mask_bits_positions, _rook_attacks_from_occupancy, ...).
 """
 
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple, Optional, Union
 import threading
 
 from utils.constants import SQUARE_TO_FILE, SQUARE_TO_RANK, U64
@@ -185,9 +197,9 @@ def _build_attack_table_for_square(
     magic: int,
     shift: int,
 ) -> Tuple[int, ...]:
-    bits = mask.bit_count()
+    bits = _bit_count(mask)
     size = 1 << bits
-    table: List[int | None] = [None] * size
+    table: List[Optional[int]] = [None] * size
     mask_local = mask & U64
     magic_local = magic & U64
     attacks_func = _rook_attacks_from_occupancy if is_rook else _bishop_attacks_from_occupancy
@@ -298,8 +310,8 @@ def init(validate: bool = True) -> None:
             rook_masks_list.append(rmask)
             bishop_masks_list.append(bmask)
 
-            rb = rmask.bit_count()
-            bb = bmask.bit_count()
+            rb = _bit_count(rmask)
+            bb = _bit_count(bmask)
             rook_bits_list.append(rb)
             bishop_bits_list.append(bb)
 

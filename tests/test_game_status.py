@@ -2,7 +2,7 @@ import pytest
 
 from core.board.board import Board
 from core.rules.game_status import get_game_status
-from core.rules.repetition import RepetitionTable
+from core.rules.draw_repetition import RepetitionTable
 from core.moves.legal_movegen import generate_legal_moves
 from utils.enums import GameResult
 

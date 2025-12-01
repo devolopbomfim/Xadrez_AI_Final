@@ -6,7 +6,7 @@ from core.moves.move import Move
 from core.rules.game_status import get_game_status
 from utils.enums import GameResult, PieceType
 from utils.constants import square_index
-from core.rules.repetition import RepetitionTable
+from core.rules.draw_repetition import RepetitionTable
 
 
 
