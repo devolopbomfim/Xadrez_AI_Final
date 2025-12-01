@@ -1,37 +1,32 @@
-# Ambiente virtual
+# virtualenv
 venv/
 .venv/
 
-# Modelos / pesos grandes
-models.AgentA/
+# models / checkpoints
 models/
+models.AgentA/
 *.pt
 *.pth
 *.ckpt
 
-# Cache Python
+# caches, temp
 __pycache__/
-*.pyc
-*.pyo
+.pytest_cache/
+.hypothesis/
+*.ipynb_checkpoints
 
-# Notebooks grandes (opcional)
-*.ipynb
+# build / artifacts
+build/
+dist/
+*.egg-info/
 
-# Arquivos temporários
-*.log
-*.tmp
-
-# IDE / Editor
-.idea/
+# IDE
 .vscode/
+.idea/
 
 # OS
 .DS_Store
 
-# Geradores e ferramentas
-tools/magics/generate_magics
-tools/magics/*.bin
-
-# Diretórios pessoais
-pessoal/
+# logs
+*.log
 logs/
